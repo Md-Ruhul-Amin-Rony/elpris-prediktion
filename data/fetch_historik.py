@@ -1,6 +1,6 @@
 import requests
 import argparse
-
+import pandas as pd
 def parse_args():
     parser = argparse.ArgumentParser(description="Fetch historical electricity prices")
     parser.add_argument("--from", dest="from_date", required=True, help="Start date, YYYY-MM-DD")
@@ -44,6 +44,11 @@ def fetch_prices_for_range(start: date, end: date, areas: list[str]) -> list[dic
         current += timedelta(days=1)
 
     return all_rows
+def save_prices(rows: list[dict], path: str = "data/historik_elpris.csv.gz"):
+    df = pd.DataFrame(rows)
+    df.to_csv(path, index=False, compression="gzip")
+    print(f"Saved {len(df)} rows to {path}")
+    return df
 
 if __name__ == "__main__":
     args = parse_args()
@@ -51,4 +56,5 @@ if __name__ == "__main__":
     end = date.fromisoformat(args.to_date)
 
     rows = fetch_prices_for_range(start, end, args.areas)
+    save_prices(rows)
     print(f"Fetched {len(rows)} rows for areas {args.areas}, {start} to {end}")
