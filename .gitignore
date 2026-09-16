@@ -1,7 +1,16 @@
-@"
+# Secrets — never commit the real one
 .env
-.venv/
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Notebook checkpoints
 .ipynb_checkpoints/
-"@ | Out-File -Encoding utf8 .gitignore
+
+# OS
+.DS_Store
