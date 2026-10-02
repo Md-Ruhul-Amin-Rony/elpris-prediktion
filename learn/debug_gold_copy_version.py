@@ -1,8 +1,8 @@
 import os
+
 import pandas as pd
 import psycopg2
 from dotenv import load_dotenv
-
 from features_copy_version import build_features, daily_prices, daily_weather
 
 load_dotenv()
@@ -57,5 +57,5 @@ COLUMNS = [
     "y",
 ]
 row = next(feat[COLUMNS].itertuples(index=False))
-for name, value in zip(COLUMNS, row):
+for name, value in zip(COLUMNS, row, strict=True):
     print(f"  {name:20} {value!r:30} {type(value).__name__}")

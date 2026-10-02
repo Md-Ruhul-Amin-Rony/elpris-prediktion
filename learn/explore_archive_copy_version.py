@@ -20,7 +20,7 @@ for name, param_id in PARAMETERS.items():
         print(repr(line))
 
     print("\n--- first rows from 2024-08-01 ---")
-    for line in [l for l in lines if l.startswith("2024-08-01")][:3]:
+    for line in [entry for entry in lines if entry.startswith("2024-08-01")][:3]:
         print(repr(line))
 
     print("\n--- last 3 lines ---")

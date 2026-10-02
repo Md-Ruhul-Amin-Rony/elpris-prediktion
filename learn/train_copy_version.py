@@ -31,9 +31,8 @@ import pandas as pd
 import psycopg2
 from dotenv import load_dotenv
 from sklearn.ensemble import HistGradientBoostingRegressor
-from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.inspection import permutation_importance
-
+from sklearn.metrics import mean_absolute_error, r2_score
 from swedish_time_copy_version import STOCKHOLM
 
 load_dotenv()
@@ -250,7 +249,7 @@ def train_and_evaluate_model(
         n_repeats=20, random_state=RANDOM_SEED,
         scoring="neg_mean_absolute_error",
     )
-    importance = dict(zip(FEATURES, (float(v) for v in imp.importances_mean)))
+    importance = dict(zip(FEATURES, (float(v) for v in imp.importances_mean), strict=True))
 
     if verbose:
         verdict = "beats" if mae < naive_mae else "LOSES TO"
