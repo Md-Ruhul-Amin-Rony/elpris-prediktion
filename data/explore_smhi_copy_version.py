@@ -1,6 +1,7 @@
-import requests
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
+
+import requests
 
 STATION = 97400
 STOCKHOLM = ZoneInfo("Europe/Stockholm")
@@ -22,7 +23,7 @@ print()
 for v in payload["value"][-3:]:
     ms = v["date"]
     naive = datetime.fromtimestamp(ms / 1000)
-    aware = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+    aware = datetime.fromtimestamp(ms / 1000, tz=UTC)
     print(f"raw date     {ms}")
     print(f"  naive      {naive}    tzinfo={naive.tzinfo}")
     print(f"  aware UTC  {aware}")

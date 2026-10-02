@@ -4,7 +4,6 @@ Turn Silver's hourly data into one row per day we want to predict.
 Pure functions over DataFrames: no database, no network.
 """
 import pandas as pd
-
 from swedish_time_copy_version import STOCKHOLM
 
 MAX_GAP_HOURS = 6
