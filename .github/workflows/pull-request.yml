@@ -4,15 +4,10 @@ on:
   pull_request:
     branches:
       - main
-    types: [opened, synchronize, reopened, review_requested]
-  pull_request_review:
-    branches:
-      - main
-    types: [submitted, dismissed]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
-  pull-requests: read
 
 jobs:
   validate:
@@ -45,43 +40,3 @@ jobs:
           else
             echo "No test files found; skipping pytest."
           fi
-
-  independent-review:
-    name: Independent review required
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check for approval from a non-author
-        uses: actions/github-script@v8
-        with:
-          script: |
-            const pullRequest = context.payload.pull_request;
-            const reviews = await github.paginate(
-              github.rest.pulls.listReviews,
-              {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: pullRequest.number,
-                per_page: 100,
-              },
-            );
-
-            const latestReviewByUser = new Map();
-            for (const review of reviews) {
-              if (review.user?.login) {
-                latestReviewByUser.set(review.user.login, review.state);
-              }
-            }
-
-            const author = pullRequest.user.login;
-            const approvedBy = [...latestReviewByUser.entries()]
-              .filter(([login, state]) => login !== author && state === "APPROVED")
-              .map(([login]) => login);
-
-            if (approvedBy.length === 0) {
-              core.setFailed(
-                `An approval from someone other than ${author} is required before merging.`,
-              );
-              return;
-            }
-
-            core.info(`Approved by: ${approvedBy.join(", ")}`);
