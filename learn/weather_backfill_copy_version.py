@@ -8,15 +8,14 @@ Run once:  uv run python learn/weather_backfill_copy_version.py 2024-08-01
 """
 import os
 import sys
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 import psycopg2
 import requests
 from dotenv import load_dotenv
-from psycopg2.extras import Json, execute_values
-
 from ingest_copy_version import PARAMETERS, STATION, fetch_weather
+from psycopg2.extras import Json, execute_values
 
 load_dotenv()
 
@@ -45,7 +44,7 @@ def fetch_archive(param_id):
             continue
         day, clock, value, quality = line.split(";")[:4]
         # The column header says "Tid (UTC)", so we label it UTC.
-        observed_at = datetime.fromisoformat(f"{day}T{clock}").replace(tzinfo=timezone.utc)
+        observed_at = datetime.fromisoformat(f"{day}T{clock}").replace(tzinfo=UTC)
         yield observed_at, {"raw_line": line, "value": value, "quality": quality}
 
 
@@ -81,7 +80,7 @@ def main():
                     rows = []
                     for reading in fetch_weather(param_id):
                         observed_at = datetime.fromtimestamp(
-                            reading["date"] / 1000, tz=timezone.utc
+                            reading["date"] / 1000, tz=UTC
                         )
                         rows.append((STATION, name, observed_at, Json(reading), "latest-months"))
                     execute_values(cur, INSERT_SQL, rows, page_size=1000)

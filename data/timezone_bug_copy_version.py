@@ -1,6 +1,7 @@
 import os
+from datetime import UTC, datetime
+
 import psycopg2
-from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -9,7 +10,7 @@ load_dotenv()
 ms = 1757894400000
 
 naive = datetime.fromtimestamp(ms / 1000)                    # no timezone attached
-aware = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)   # explicitly UTC
+aware = datetime.fromtimestamp(ms / 1000, tz=UTC)   # explicitly UTC
 
 conn = psycopg2.connect(os.environ["DATABASE_URL"])
 with conn.cursor() as cur:

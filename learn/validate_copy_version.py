@@ -12,7 +12,6 @@ from datetime import date, datetime, timedelta
 
 import psycopg2
 from dotenv import load_dotenv
-
 from swedish_time_copy_version import (
     STOCKHOLM,
     expected_price_intervals,

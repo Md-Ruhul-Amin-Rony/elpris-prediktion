@@ -1,5 +1,6 @@
-import requests
 from datetime import date
+
+import requests
 
 AREA = "SE3"
 

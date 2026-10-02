@@ -1,4 +1,4 @@
-from datetime import date, datetime, time, timezone
+from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo
 
 STOCKHOLM = ZoneInfo("Europe/Stockholm")
@@ -9,4 +9,4 @@ end   = datetime.combine(date(2025, 10, 27), time.min, tzinfo=STOCKHOLM)
 print("start:                 ", start)
 print("end:                   ", end)
 print("end - start:           ", end - start)
-print("same, compared in UTC: ", end.astimezone(timezone.utc) - start.astimezone(timezone.utc))
+print("same, compared in UTC: ", end.astimezone(UTC) - start.astimezone(UTC))

@@ -4,7 +4,7 @@ Calendar facts about Swedish local days.
 Pure functions: no database, no network, same input always gives the
 same output. That makes them easy to reuse and easy to test.
 """
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 STOCKHOLM = ZoneInfo("Europe/Stockholm")
@@ -18,8 +18,8 @@ def local_midnight(day):
 
 def hours_in_local_day(day):
     """23, 24 or 25, depending on daylight saving."""
-    start = local_midnight(day).astimezone(timezone.utc)
-    end = local_midnight(day + timedelta(days=1)).astimezone(timezone.utc)
+    start = local_midnight(day).astimezone(UTC)
+    end = local_midnight(day + timedelta(days=1)).astimezone(UTC)
     return round((end - start).total_seconds() / 3600)
 
 

@@ -10,9 +10,8 @@ import os
 import pandas as pd
 import psycopg2
 from dotenv import load_dotenv
-from psycopg2.extras import execute_values
-
 from features_copy_version import build_features, daily_prices, daily_weather
+from psycopg2.extras import execute_values
 
 load_dotenv()
 

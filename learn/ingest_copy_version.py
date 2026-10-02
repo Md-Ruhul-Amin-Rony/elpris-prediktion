@@ -4,7 +4,7 @@ Bronze ingestion: fetch recent prices and weather, append them untouched.
 Run:  uv run python learn/ingest_copy_version.py
 """
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import psycopg2
@@ -66,7 +66,7 @@ def main():
         readings = fetch_weather(param_id)
         kept = 0
         for reading in readings:
-            observed_at = datetime.fromtimestamp(reading["date"] / 1000, tz=timezone.utc)
+            observed_at = datetime.fromtimestamp(reading["date"] / 1000, tz=UTC)
             if observed_at < cutoff:
                 continue
             weather_rows.append((STATION, name, observed_at, Json(reading)))

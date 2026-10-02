@@ -13,9 +13,8 @@ from datetime import date, timedelta
 
 import psycopg2
 from dotenv import load_dotenv
-from psycopg2.extras import Json
-
 from ingest_copy_version import AREA, fetch_prices
+from psycopg2.extras import Json
 
 load_dotenv()
 
