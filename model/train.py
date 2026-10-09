@@ -230,18 +230,70 @@ def daily_price_table(prices: pd.DataFrame) -> pd.DataFrame:
     return daily.sort_index()
 
 
-def daily_weather_table(weather: pd.DataFrame) -> pd.DataFrame:
-    """Create one row per day from the Silver weather observations."""
+# Weather gap handling (card #36 revisited, 2026-10-09 — see docs/validation.md).
+# A run of up to INTERPOLATE_GAP_HOURS consecutive missing hours is bridged
+# with linear interpolation. A day with more real hours missing than
+# MAX_MISSING_HOURS_PER_DAY -- whether from one longer gap or several short
+# ones -- is too sparse to average over; its aggregate is left null so the
+# existing FEATURES dropna in main() drops that gold row at training time.
+INTERPOLATE_GAP_HOURS = 3
+MAX_MISSING_HOURS_PER_DAY = 3
 
-    grouped = weather.groupby("date_local")
+
+def fill_weather_gaps(weather: pd.DataFrame) -> pd.DataFrame:
+    """Reindex weather to a complete hourly UTC grid and bridge short gaps.
+
+    UTC, not local time, is the grid: it is evenly spaced through DST
+    changes, so a gap's length in hours means the same thing year-round.
+    Returns one row per UTC hour with temp_c/wind_ms after interpolation,
+    plus *_observed flags marking which hours were real before filling.
+    """
+    hourly = weather.groupby("ts_utc")[["temp_c", "wind_ms"]].mean().sort_index()
+
+    full_index = pd.date_range(hourly.index.min(), hourly.index.max(), freq="h", tz="UTC")
+    hourly = hourly.reindex(full_index)
+
+    observed = hourly.notna()
+    filled = hourly.interpolate(
+        method="linear",
+        limit=INTERPOLATE_GAP_HOURS,
+        limit_area="inside",
+    )
+
+    result = filled.reset_index(names="ts_utc")
+    result["date_local"] = result["ts_utc"].dt.tz_convert(STOCKHOLM).dt.date
+    result["temp_observed"] = observed["temp_c"].to_numpy()
+    result["wind_observed"] = observed["wind_ms"].to_numpy()
+
+    return result
+
+
+def daily_weather_table(weather: pd.DataFrame) -> pd.DataFrame:
+    """Create one row per day from the Silver weather observations.
+
+    Short gaps (<= INTERPOLATE_GAP_HOURS) are filled before aggregating. A
+    day whose real coverage still falls short of MAX_MISSING_HOURS_PER_DAY
+    gets a null aggregate for that variable instead of a mean computed over
+    mostly-missing hours.
+    """
+    filled = fill_weather_gaps(weather)
+    grouped = filled.groupby("date_local")
+
+    hours_per_day = grouped.size()
+    n_obs_temp = grouped["temp_observed"].sum()
+    n_obs_wind = grouped["wind_observed"].sum()
+
+    temp_ok = (hours_per_day - n_obs_temp) <= MAX_MISSING_HOURS_PER_DAY
+    wind_ok = (hours_per_day - n_obs_wind) <= MAX_MISSING_HOURS_PER_DAY
 
     daily = pd.DataFrame(
         {
-            "temp_mean": grouped["temp_c"].mean(),
-            "temp_min": grouped["temp_c"].min(),
-            "temp_max": grouped["temp_c"].max(),
-            "wind_mean": grouped["wind_ms"].mean(),
-            "n_obs": grouped["value"].count(),
+            "temp_mean": grouped["temp_c"].mean().where(temp_ok),
+            "temp_min": grouped["temp_c"].min().where(temp_ok),
+            "temp_max": grouped["temp_c"].max().where(temp_ok),
+            "wind_mean": grouped["wind_ms"].mean().where(wind_ok),
+            "n_obs_temp": n_obs_temp,
+            "n_obs_wind": n_obs_wind,
         }
     )
 

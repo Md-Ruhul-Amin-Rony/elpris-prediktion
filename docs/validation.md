@@ -50,30 +50,42 @@ something is missing (24 expected):
 
 How gaps are handled is decided below; validation only counts them.
 
-## How gaps are handled: use the hours that exist
+## How gaps are handled: bridge short gaps, drop sparse days
 
-Team decision 2026-09-08 (card #36, closed): the feature table uses the
-observations that exist. A day's temperature mean, min and max and its
-wind mean are computed over the hours present for that day. Nothing is
-interpolated and nothing is filled in. `daily_weather_table` in
-`model/train.py` already does this: the mean skips missing hours.
+Team decision 2026-10-09 (card #36 revisited, supersedes 2026-09-08):
+a few missing hours can reasonably be interpolated; a long outage
+should not be averaged over as if it were a normal day. The line:
+
+- A run of up to `INTERPOLATE_GAP_HOURS` (3) consecutive missing hours
+  is linearly interpolated, on the UTC hourly grid so the gap length
+  means the same thing across a DST change.
+- A day with more real hours missing than `MAX_MISSING_HOURS_PER_DAY`
+  (3) — whether from one longer gap or several short ones — gets a
+  null aggregate for that variable (temperature and wind are judged
+  independently) instead of a mean computed over mostly-missing hours.
+  That null feature row is dropped at training time by the existing
+  `FEATURES` dropna in `model/train.py`'s `main()`.
+
+Implemented in `fill_weather_gaps` and `daily_weather_table` in
+`model/train.py`, covered by `tests/test_weather_gaps.py`. `n_obs`
+(one column) is now `n_obs_temp` and `n_obs_wind` (counts of real,
+non-interpolated hours), since a gap in one variable should not drop
+the other.
 
 Checked against `silver__weather` for station 97400 on 2026-09-08,
 2024-08-01 to 2026-09-07, 768 days:
 
 - no price day lacks weather entirely;
 - 8 temperature days and 11 wind days have fewer than 23 hours, the
-  shortest has 19;
-- 16 wind values are NULL and are skipped by the mean;
+  shortest has 19 (5 hours missing) — under the old rule these were
+  kept with a mean over fewer hours; under this rule a 5-hour day now
+  gets a null aggregate and is dropped, since 5 > `MAX_MISSING_HOURS_PER_DAY`;
+- 16 wind values are NULL and are skipped the same way a missing hour is;
 - every observation carries quality code G.
 
-So no feature row gets an empty weather value from a gap. The only row
-without weather is the newest day, whose "tomorrow" does not exist yet,
-and it has no target either. A day with no observations at all would
-give NULL weather features for the previous day's row; that has not
-happened in 768 days, and `validate.py` prints MISSING for that day if
-it does. Revisit this rule if such a day appears or if interpolation is
-wanted later.
+Revisit the two thresholds if a multi-day outage is ever observed (the
+case this rule exists for) or if the drop rate at training time turns
+out to matter more than the interpolation does.
 
 ## Not flagged, on purpose
 
