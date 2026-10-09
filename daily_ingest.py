@@ -31,6 +31,37 @@ PARAMETERS = {
     4: "wind",
 }
 
+BRONZE_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS raw__weather (
+    raw_id BIGSERIAL PRIMARY KEY,
+    ingestion_timestamp TIMESTAMPTZ NOT NULL DEFAULT now(),
+    station TEXT NOT NULL,
+    parameter TEXT NOT NULL,
+    observed_at TIMESTAMPTZ NOT NULL,
+    data JSONB NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS raw__weather_natural_key_idx
+    ON raw__weather (station, parameter, observed_at);
+
+CREATE TABLE IF NOT EXISTS raw__elpris (
+    raw_id BIGSERIAL PRIMARY KEY,
+    ingestion_timestamp TIMESTAMPTZ NOT NULL DEFAULT now(),
+    price_area TEXT NOT NULL,
+    price_date DATE NOT NULL,
+    data JSONB NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS raw__elpris_natural_key_idx
+    ON raw__elpris (price_area, price_date);
+"""
+
+
+def ensure_raw_tables(conn) -> None:
+    """Create required bronze tables/indexes when they are missing."""
+    with conn.cursor() as cur:
+        cur.execute(BRONZE_SCHEMA_SQL)
+
 
 def ingest_prices(conn, area: str, day: date) -> int:
     """
@@ -149,6 +180,8 @@ def main():
     conn = psycopg2.connect(DATABASE_URL)
 
     try:
+        ensure_raw_tables(conn)
+
         # Electricity API supports one date per request.
         for offset in range(args.days):
             day = start_day + timedelta(days=offset)
