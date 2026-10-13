@@ -1,0 +1,39 @@
+name: Learn Daily Pipeline
+
+on:
+  schedule:
+    - cron: '0 22 * * *'
+  workflow_dispatch:
+
+jobs:
+  ingest-and-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy scikit-learn requests psycopg2-binary python-dotenv tzdata
+
+      - name: Run bronze ingestion (learn/ingest_copy_version.py)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PRICE_AREA: ${{ vars.PRICE_AREA }}
+          STATION_ID: ${{ vars.STATION_ID }}
+        run: python learn/ingest_copy_version.py
+
+      - name: Build gold feature table (learn/build_gold_copy_version.py)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PRICE_AREA: ${{ vars.PRICE_AREA }}
+          STATION_ID: ${{ vars.STATION_ID }}
+        run: python learn/build_gold_copy_version.py
