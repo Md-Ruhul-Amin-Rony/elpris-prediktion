@@ -130,9 +130,14 @@ def fetch_df(conn, sql: str, params: tuple) -> pd.DataFrame:
 
 
 def load_features(area: str, start_date: str | None, end_date: str | None) -> pd.DataFrame:
-    """Load prepared feature rows from Gold, oldest first."""
+    """Load prepared feature rows from Gold, oldest first.
+
+    Also loads n_obs_temp/n_obs_wind -- not model inputs, but needed to
+    tell a row with real observed weather apart from one still standing
+    in on a forecast (see fill_forecast_gaps in features_copy_version.py).
+    """
     sql = (
-        f"SELECT target_date, {', '.join(FEATURES)}, y"
+        f"SELECT target_date, {', '.join(FEATURES)}, y, n_obs_temp, n_obs_wind"
         " FROM learn.feat__daily"
         " WHERE price_area = %s"
         "   AND (%s::date IS NULL OR target_date >= %s::date)"
@@ -149,7 +154,7 @@ def load_features(area: str, start_date: str | None, end_date: str | None) -> pd
         raise SystemExit(f"No feature rows found for {area} in the given range.")
 
     # Postgres NUMERIC arrives as Decimal; sklearn needs floats.
-    for col in FEATURES + ["y"]:
+    for col in [*FEATURES, "y", "n_obs_temp", "n_obs_wind"]:
         if col != "is_weekend":
             df[col] = pd.to_numeric(df[col], errors="coerce")
     df["is_weekend"] = df["is_weekend"].astype(int)
@@ -182,10 +187,18 @@ def train_and_evaluate_model(
     df = load_features(area, start_date, end_date)
     usable = df.dropna(subset=FEATURES + ["y"])
 
+    # A row can have a real y (the price publishes a day ahead) while its
+    # weather is still forecast-filled (weather is never known in advance).
+    # Training on that row would teach the model forecast values labeled
+    # as truth -- exclude it, the same way a NULL would be excluded.
+    forecast_based = (usable["n_obs_temp"] == 0) | (usable["n_obs_wind"] == 0)
+    usable = usable[~forecast_based]
+
     if verbose:
         print(f"feature rows {len(df)} "
               f"({df.index.min().date()} .. {df.index.max().date()})")
-        print(f"usable rows  {len(usable)} of {len(df)}")
+        print(f"usable rows  {len(usable)} of {len(df)} "
+              f"({int(forecast_based.sum())} excluded: forecast-based weather)")
 
     if len(usable) < MIN_USABLE_ROWS:
         raise SystemExit(
