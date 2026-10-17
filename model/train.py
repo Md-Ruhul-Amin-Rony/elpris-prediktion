@@ -1,11 +1,9 @@
 """
 Training pipeline: predict tomorrow's electricity price.
 
-This version reads prepared daily features from feat__daily
-in PostgreSQL/Neon.
-
-Feature engineering is handled separately by feature_pipeline.py,
-which builds feat__daily from the Silver layer.
+Reads prepared daily features from learn.feat__daily. Feature engineering
+is handled separately, by learn/features_copy_version.py and
+learn/build_gold_copy_version.py.
 
 Run:
 
@@ -13,8 +11,10 @@ Run:
 
 Configuration comes from the environment:
 
-    PRICE_AREA   SE1 | SE2 | SE3 | SE4
-    TARGET       mean | peak
+    PRICE_AREA         SE1 | SE2 | SE3 | SE4
+    TARGET             mean | peak
+    TRAIN_START_DATE   optional, defaults to the earliest row in Gold
+    TRAIN_END_DATE     optional, defaults to the latest row in Gold
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ STOCKHOLM = zoneinfo.ZoneInfo("Europe/Stockholm")
 AREA_STATIONS = {
     "SE1": (162860, "Lulea-Kallax Flygplats"),
     "SE2": (134100, "Ostersunds Flygplats"),
-    "SE3": (97400, "Stockholm-Bromma Flygplats"),
+    "SE3": (97400, "Stockholm-Arlanda Flygplats"),  # verified against SMHI
     "SE4": (53430, "Malmo A"),
 }
 
@@ -71,10 +71,10 @@ def get_connection():
 
 def load_features(
     area: str,
-    start_date: str,
-    end_date: str,
+    start_date: str | None,
+    end_date: str | None,
 ) -> pd.DataFrame:
-    """Load prepared model features from feat__daily."""
+    """Load prepared model features from learn.feat__daily."""
 
     query = """
         SELECT
@@ -92,9 +92,10 @@ def load_features(
             month,
             is_weekend,
             y
-        FROM feat__daily
+        FROM learn.feat__daily
         WHERE price_area = %s
-          AND target_date BETWEEN %s AND %s
+          AND (%s::date IS NULL OR target_date >= %s::date)
+          AND (%s::date IS NULL OR target_date <= %s::date)
         ORDER BY target_date
     """
 
@@ -102,254 +103,14 @@ def load_features(
         df = pd.read_sql_query(
             query,
             conn,
-            params=(area, start_date, end_date),
+            params=(area, start_date, start_date, end_date, end_date),
         )
 
     if df.empty:
-        raise SystemExit(
-            f"No feature rows found for {area} "
-            f"between {start_date} and {end_date}."
-        )
+        raise SystemExit(f"No feature rows found for {area} in the given range.")
 
     df["target_date"] = pd.to_datetime(df["target_date"])
     df = df.set_index("target_date")
-
-    return df
-
-
-def load_prices(area: str) -> pd.DataFrame:
-    """Load electricity prices from the Silver layer."""
-
-    query = """
-        SELECT
-            price_area,
-            price_date,
-            starts_at,
-            ends_at,
-            sek_per_kwh
-        FROM silver__elpris
-        WHERE price_area = %s
-        ORDER BY starts_at
-    """
-
-    with get_connection() as conn:
-        df = pd.read_sql_query(query, conn, params=(area,))
-
-    if df.empty:
-        raise SystemExit(f"No price rows found for {area}.")
-
-    df["ts_utc"] = pd.to_datetime(
-        df["starts_at"],
-        utc=True,
-    )
-
-    df["ts_local"] = df["ts_utc"].dt.tz_convert(STOCKHOLM)
-    df["date_local"] = df["ts_local"].dt.date
-
-    df["sek_per_kwh"] = pd.to_numeric(
-        df["sek_per_kwh"],
-        errors="coerce",
-    )
-
-    df = df.dropna(subset=["sek_per_kwh"])
-
-    return df.sort_values("ts_utc").reset_index(drop=True)
-
-
-def load_weather(area: str) -> pd.DataFrame:
-    """Load weather observations from the Silver layer."""
-
-    station, station_name = AREA_STATIONS[area]
-
-    query = """
-        SELECT
-            station,
-            parameter,
-            observed_at,
-            value,
-            quality
-        FROM silver__weather
-        WHERE station = %s::text
-          AND parameter IN ('temperature', 'wind')
-        ORDER BY observed_at
-    """
-
-    with get_connection() as conn:
-        df = pd.read_sql_query(query, conn, params=(station,))
-
-    if df.empty:
-        raise SystemExit(
-            f"No weather rows found for station {station} ({station_name})."
-        )
-
-    df["ts_utc"] = pd.to_datetime(
-        df["observed_at"],
-        utc=True,
-    )
-
-    df["ts_local"] = df["ts_utc"].dt.tz_convert(STOCKHOLM)
-    df["date_local"] = df["ts_local"].dt.date
-
-    df["value"] = pd.to_numeric(
-        df["value"],
-        errors="coerce",
-    )
-
-    # Convert the Silver parameter rows into the same columns
-    # that the original CSV pipeline used.
-    df["temp_c"] = df["value"].where(
-        df["parameter"] == "temperature"
-    )
-
-    df["wind_ms"] = df["value"].where(
-        df["parameter"] == "wind"
-    )
-
-    return df.sort_values("ts_utc").reset_index(drop=True)
-
-
-# --------------------------------------------------------------------------
-# aggregate to one row per day
-# --------------------------------------------------------------------------
-def daily_price_table(prices: pd.DataFrame) -> pd.DataFrame:
-    """Collapse the price series to one row per local calendar day."""
-
-    grouped = prices.groupby("date_local")["sek_per_kwh"]
-
-    daily = pd.DataFrame(
-        {
-            "mean_price": grouped.mean(),
-            "peak_price": grouped.max(),
-            "min_price": grouped.min(),
-            "n_intervals": grouped.size(),
-        }
-    )
-
-    daily.index = pd.to_datetime(daily.index)
-
-    return daily.sort_index()
-
-
-# Weather gap handling (card #36 revisited, 2026-10-09 — see docs/validation.md).
-# A run of up to INTERPOLATE_GAP_HOURS consecutive missing hours is bridged
-# with linear interpolation. A day with more real hours missing than
-# MAX_MISSING_HOURS_PER_DAY -- whether from one longer gap or several short
-# ones -- is too sparse to average over; its aggregate is left null so the
-# existing FEATURES dropna in main() drops that gold row at training time.
-INTERPOLATE_GAP_HOURS = 3
-MAX_MISSING_HOURS_PER_DAY = 3
-
-
-def fill_weather_gaps(weather: pd.DataFrame) -> pd.DataFrame:
-    """Reindex weather to a complete hourly UTC grid and bridge short gaps.
-
-    UTC, not local time, is the grid: it is evenly spaced through DST
-    changes, so a gap's length in hours means the same thing year-round.
-    Returns one row per UTC hour with temp_c/wind_ms after interpolation,
-    plus *_observed flags marking which hours were real before filling.
-    """
-    hourly = weather.groupby("ts_utc")[["temp_c", "wind_ms"]].mean().sort_index()
-
-    full_index = pd.date_range(hourly.index.min(), hourly.index.max(), freq="h", tz="UTC")
-    hourly = hourly.reindex(full_index)
-
-    observed = hourly.notna()
-    filled = hourly.interpolate(
-        method="linear",
-        limit=INTERPOLATE_GAP_HOURS,
-        limit_area="inside",
-    )
-
-    result = filled.reset_index(names="ts_utc")
-    result["date_local"] = result["ts_utc"].dt.tz_convert(STOCKHOLM).dt.date
-    result["temp_observed"] = observed["temp_c"].to_numpy()
-    result["wind_observed"] = observed["wind_ms"].to_numpy()
-
-    return result
-
-
-def daily_weather_table(weather: pd.DataFrame) -> pd.DataFrame:
-    """Create one row per day from the Silver weather observations.
-
-    Short gaps (<= INTERPOLATE_GAP_HOURS) are filled before aggregating. A
-    day whose real coverage still falls short of MAX_MISSING_HOURS_PER_DAY
-    gets a null aggregate for that variable instead of a mean computed over
-    mostly-missing hours.
-    """
-    filled = fill_weather_gaps(weather)
-    grouped = filled.groupby("date_local")
-
-    hours_per_day = grouped.size()
-    n_obs_temp = grouped["temp_observed"].sum()
-    n_obs_wind = grouped["wind_observed"].sum()
-
-    temp_ok = (hours_per_day - n_obs_temp) <= MAX_MISSING_HOURS_PER_DAY
-    wind_ok = (hours_per_day - n_obs_wind) <= MAX_MISSING_HOURS_PER_DAY
-
-    daily = pd.DataFrame(
-        {
-            "temp_mean": grouped["temp_c"].mean().where(temp_ok),
-            "temp_min": grouped["temp_c"].min().where(temp_ok),
-            "temp_max": grouped["temp_c"].max().where(temp_ok),
-            "wind_mean": grouped["wind_ms"].mean().where(wind_ok),
-            "n_obs_temp": n_obs_temp,
-            "n_obs_wind": n_obs_wind,
-        }
-    )
-
-    daily.index = pd.to_datetime(daily.index)
-
-    return daily.sort_index()
-
-
-# --------------------------------------------------------------------------
-# features
-# --------------------------------------------------------------------------
-def build_features(
-    daily_price: pd.DataFrame,
-    daily_weather: pd.DataFrame,
-) -> pd.DataFrame:
-    """Build one feature row per prediction day."""
-
-    df = daily_price.join(
-        daily_weather,
-        how="left",
-    )
-
-    # Tomorrow's weather.
-    for col in (
-        "temp_mean",
-        "temp_min",
-        "temp_max",
-        "wind_mean",
-    ):
-        df[f"tomorrow_{col}"] = df[col].shift(-1)
-
-    # Price history available at prediction time.
-    df["price_today"] = df["mean_price"]
-    df["price_yesterday"] = df["mean_price"].shift(1)
-    df["price_7d_ago"] = df["mean_price"].shift(7)
-    df["price_7d_mean"] = df["mean_price"].rolling(
-        7,
-        min_periods=3,
-    ).mean()
-    df["peak_today"] = df["peak_price"]
-
-    # Calendar features.
-    df["dayofweek"] = df.index.dayofweek
-    df["month"] = df.index.month
-    df["is_weekend"] = (
-        df.index.dayofweek >= 5
-    ).astype(int)
-
-    # Tomorrow's target.
-    label_col = (
-        "mean_price"
-        if TARGET == "mean"
-        else "peak_price"
-    )
-
-    df["y"] = df[label_col].shift(-1)
 
     return df
 
@@ -390,11 +151,6 @@ def main() -> None:
     )
 
     # Load prepared features directly from the feature table.
-    if not TRAIN_START_DATE or not TRAIN_END_DATE:
-        raise SystemExit(
-            "TRAIN_START_DATE and TRAIN_END_DATE must be set in .env."
-        )
-
     df = load_features(
         PRICE_AREA,
         TRAIN_START_DATE,
