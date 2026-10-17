@@ -31,6 +31,13 @@ jobs:
           STATION_ID: ${{ vars.STATION_ID }}
         run: python learn/ingest_copy_version.py
 
+      - name: Fetch weather forecast (learn/forecast_ingest_copy_version.py)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PRICE_AREA: ${{ vars.PRICE_AREA }}
+          STATION_ID: ${{ vars.STATION_ID }}
+        run: python learn/forecast_ingest_copy_version.py
+
       - name: Build gold feature table (learn/build_gold_copy_version.py)
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
