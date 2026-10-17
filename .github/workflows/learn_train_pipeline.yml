@@ -31,7 +31,6 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           PRICE_AREA: ${{ vars.PRICE_AREA }}
           STATION_ID: ${{ vars.STATION_ID }}
-          TARGET: ${{ vars.TARGET }}
         run: python learn/train_copy_version.py
 
       - name: Upload trained model
