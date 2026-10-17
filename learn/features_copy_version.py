@@ -67,6 +67,73 @@ def daily_weather(weather):
     return daily.sort_index()
 
 
+def daily_forecast(forecast):
+    """One row per Swedish day the forecast covers. Same shape as daily_weather()."""
+    df = forecast.copy()
+    df["value"] = pd.to_numeric(df["value"])
+    df["ts"] = pd.to_datetime(df["valid_at"], utc=True)
+
+    wide = df.pivot_table(index="ts", columns="parameter", values="value")
+    wide["day"] = wide.index.tz_convert(STOCKHOLM).date
+    grouped = wide.groupby("day")
+
+    daily = pd.DataFrame({
+        "temp_mean": grouped["temperature"].mean(),
+        "temp_min": grouped["temperature"].min(),
+        "temp_max": grouped["temperature"].max(),
+        "wind_mean": grouped["wind"].mean(),
+    })
+    daily.index = pd.to_datetime(daily.index)
+    return daily.sort_index()
+
+
+# Which feat__daily column a forecast day's aggregate fills, when real
+# observations haven't happened yet -- and which n_obs column must become
+# 0 (a known fact: zero real hours), not stay NULL (unknown), when it does.
+FORECAST_FILL_COLUMNS = {
+    "tomorrow_temp_mean": ("temp_mean", "n_obs_temp"),
+    "tomorrow_temp_min": ("temp_min", "n_obs_temp"),
+    "tomorrow_temp_max": ("temp_max", "n_obs_temp"),
+    "tomorrow_wind_mean": ("wind_mean", "n_obs_wind"),
+}
+
+
+def fill_forecast_gaps(feat, forecast):
+    """
+    Fill NULL tomorrow_* weather -- the row not yet observed -- from a forecast.
+
+    Only touches cells build_features() left NULL. Every historical row
+    already has its real observed "tomorrow" from the shift, and keeps it
+    untouched here. A filled row's matching n_obs_temp/n_obs_wind also
+    becomes 0 rather than staying NULL: a forecast-filled day genuinely has
+    zero real observed hours, and that is the signal that later tells a
+    forecast-filled row apart from an ordinary observation gap. Returns
+    (filled, n_filled) so the caller can report how many values came from
+    a forecast rather than a measurement.
+    """
+    filled = feat.copy()
+    n_filled = 0
+
+    if forecast.empty:
+        return filled, n_filled
+
+    daily = daily_forecast(forecast)
+
+    for feat_col, (forecast_col, n_obs_col) in FORECAST_FILL_COLUMNS.items():
+        missing = filled.index[filled[feat_col].isna()]
+        for target_date in missing:
+            if target_date not in daily.index:
+                continue
+            value = daily.loc[target_date, forecast_col]
+            if pd.notna(value):
+                filled.loc[target_date, feat_col] = value
+                if pd.isna(filled.loc[target_date, n_obs_col]):
+                    filled.loc[target_date, n_obs_col] = 0
+                n_filled += 1
+
+    return filled, n_filled
+
+
 def build_features(daily_price, daily_weather_df, target="mean"):
     """
     One row per PREDICTION DAY.

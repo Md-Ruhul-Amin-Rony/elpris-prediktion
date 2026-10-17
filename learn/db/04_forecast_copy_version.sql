@@ -19,3 +19,22 @@ CREATE TABLE IF NOT EXISTS learn.stg__forecast (
 
 CREATE INDEX IF NOT EXISTS stg__forecast_key_idx
     ON learn.stg__forecast (station, parameter, valid_at, issued_at DESC);
+
+
+-- Silver: one row per station, parameter and forecast hour -- same long
+-- shape as silver__weather. "Latest wins" here means most recently
+-- *issued*, not most recently ingested: a forecast issued later for the
+-- same hour is generally the more accurate one.
+CREATE OR REPLACE VIEW learn.silver__forecast AS
+SELECT DISTINCT ON (station, parameter, valid_at)
+       station,
+       parameter,
+       valid_at,
+       issued_at,
+       CASE parameter
+           WHEN 'temperature' THEN (data -> 'data' ->> 'air_temperature')::numeric
+           WHEN 'wind'        THEN (data -> 'data' ->> 'wind_speed')::numeric
+       END AS value,
+       ingestion_timestamp
+FROM learn.stg__forecast
+ORDER BY station, parameter, valid_at, issued_at DESC, ingestion_timestamp DESC;

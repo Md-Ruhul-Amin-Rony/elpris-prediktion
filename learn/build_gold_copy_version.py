@@ -10,7 +10,7 @@ import os
 import pandas as pd
 import psycopg2
 from dotenv import load_dotenv
-from features_copy_version import build_features, daily_prices, daily_weather
+from features_copy_version import build_features, daily_prices, daily_weather, fill_forecast_gaps
 from psycopg2.extras import execute_values
 
 load_dotenv()
@@ -59,9 +59,22 @@ def main():
             " ORDER BY observed_at",
             {"station": STATION},
         )
-        print(f"silver: {len(prices):,} price intervals, {len(weather):,} weather readings")
+        forecast = fetch_df(
+            conn,
+            "SELECT parameter, valid_at, value"
+            " FROM learn.silver__forecast WHERE station = %(station)s"
+            " ORDER BY valid_at",
+            {"station": STATION},
+        )
+        print(
+            f"silver: {len(prices):,} price intervals, {len(weather):,} weather readings, "
+            f"{len(forecast):,} forecast readings"
+        )
 
         feat = build_features(daily_prices(prices), daily_weather(weather), TARGET)
+
+        feat, n_filled = fill_forecast_gaps(feat, forecast)
+        print(f"forecast: filled {n_filled} value(s) not yet observed")
 
         feat = feat.reset_index()
         feat["target_date"] = feat["target_date"].dt.date      # Timestamp -> date
