@@ -21,7 +21,12 @@ from train_copy_version import FEATURES
 
 load_dotenv()
 
-AREA = os.environ["PRICE_AREA"]
+# os.getenv, not os.environ[...]: this module is imported by tests for its
+# pure functions (is_weather_forecast, build_feature_snapshot), which don't
+# need any of this -- a hard KeyError here would fail that import in any
+# environment without PRICE_AREA set (e.g. CI's lint/test job, which has no
+# .env and no reason to need one). main() checks AREA itself before using it.
+AREA = os.getenv("PRICE_AREA")
 TARGET = os.getenv("TARGET", "mean")
 HF_TOKEN = os.getenv("HF_TOKEN")
 HF_MODEL_REPO = os.getenv("HF_MODEL_REPO")
@@ -81,6 +86,9 @@ def build_feature_snapshot(row: pd.Series, features: list[str]) -> dict:
 
 
 def main() -> None:
+    if not AREA:
+        raise SystemExit("PRICE_AREA is not set.")
+
     payload, model_revision = load_champion()
     model = payload["model"]
 
