@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 import psycopg2
 from dotenv import load_dotenv
+from huggingface_hub import HfApi, hf_hub_download
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import mean_absolute_error, r2_score
@@ -44,6 +45,12 @@ PRICE_AREA = os.getenv("PRICE_AREA", "SE3").upper()
 TARGET = os.getenv("TARGET", "mean").lower()
 TRAIN_START_DATE = os.getenv("TRAIN_START_DATE")
 TRAIN_END_DATE = os.getenv("TRAIN_END_DATE")
+
+# Model registry (champion/challenger). Both optional: with neither set,
+# training still runs and saves locally, it just never promotes anything.
+HF_TOKEN = os.getenv("HF_TOKEN")
+HF_MODEL_REPO = os.getenv("HF_MODEL_REPO")
+HF_MODEL_FILENAME = "model.pkl"
 
 # A year of data, so every month is represented at least once.
 MIN_USABLE_ROWS = 365
@@ -130,9 +137,14 @@ def fetch_df(conn, sql: str, params: tuple) -> pd.DataFrame:
 
 
 def load_features(area: str, start_date: str | None, end_date: str | None) -> pd.DataFrame:
-    """Load prepared feature rows from Gold, oldest first."""
+    """Load prepared feature rows from Gold, oldest first.
+
+    Also loads n_obs_temp/n_obs_wind -- not model inputs, but needed to
+    tell a row with real observed weather apart from one still standing
+    in on a forecast (see fill_forecast_gaps in features_copy_version.py).
+    """
     sql = (
-        f"SELECT target_date, {', '.join(FEATURES)}, y"
+        f"SELECT target_date, {', '.join(FEATURES)}, y, n_obs_temp, n_obs_wind"
         " FROM learn.feat__daily"
         " WHERE price_area = %s"
         "   AND (%s::date IS NULL OR target_date >= %s::date)"
@@ -149,7 +161,7 @@ def load_features(area: str, start_date: str | None, end_date: str | None) -> pd
         raise SystemExit(f"No feature rows found for {area} in the given range.")
 
     # Postgres NUMERIC arrives as Decimal; sklearn needs floats.
-    for col in FEATURES + ["y"]:
+    for col in [*FEATURES, "y", "n_obs_temp", "n_obs_wind"]:
         if col != "is_weekend":
             df[col] = pd.to_numeric(df[col], errors="coerce")
     df["is_weekend"] = df["is_weekend"].astype(int)
@@ -182,10 +194,18 @@ def train_and_evaluate_model(
     df = load_features(area, start_date, end_date)
     usable = df.dropna(subset=FEATURES + ["y"])
 
+    # A row can have a real y (the price publishes a day ahead) while its
+    # weather is still forecast-filled (weather is never known in advance).
+    # Training on that row would teach the model forecast values labeled
+    # as truth -- exclude it, the same way a NULL would be excluded.
+    forecast_based = (usable["n_obs_temp"] == 0) | (usable["n_obs_wind"] == 0)
+    usable = usable[~forecast_based]
+
     if verbose:
         print(f"feature rows {len(df)} "
               f"({df.index.min().date()} .. {df.index.max().date()})")
-        print(f"usable rows  {len(usable)} of {len(df)}")
+        print(f"usable rows  {len(usable)} of {len(df)} "
+              f"({int(forecast_based.sum())} excluded: forecast-based weather)")
 
     if len(usable) < MIN_USABLE_ROWS:
         raise SystemExit(
@@ -306,6 +326,50 @@ def train_and_evaluate_model(
 
 
 # --------------------------------------------------------------------------
+# model registry: champion/challenger on Hugging Face Hub
+# --------------------------------------------------------------------------
+def download_champion() -> dict | None:
+    """Load the current champion from the Hub, or None if there isn't one.
+
+    "No champion yet" and "can't reach the registry" are treated the same
+    way on purpose: either way there is nothing to compare against, so the
+    challenger should be judged on the naive baseline alone and promoted
+    if it clears that bar.
+    """
+    if not HF_MODEL_REPO:
+        print("registry: HF_MODEL_REPO not set, skipping champion comparison")
+        return None
+
+    try:
+        path = hf_hub_download(
+            repo_id=HF_MODEL_REPO, filename=HF_MODEL_FILENAME, token=HF_TOKEN,
+        )
+        with open(path, "rb") as fh:
+            return pickle.load(fh)
+    except Exception as exc:
+        print(f"registry: no champion available ({exc})")
+        return None
+
+
+def upload_challenger(payload: dict) -> None:
+    """Push the challenger to the Hub as the new champion."""
+    if not HF_MODEL_REPO or not HF_TOKEN:
+        print("registry: HF_MODEL_REPO/HF_TOKEN not set, cannot promote -- saved locally only")
+        return
+
+    api = HfApi(token=HF_TOKEN)
+    api.create_repo(repo_id=HF_MODEL_REPO, repo_type="model", exist_ok=True)
+    commit = api.upload_file(
+        path_or_fileobj=str(MODEL_PATH),
+        path_in_repo=HF_MODEL_FILENAME,
+        repo_id=HF_MODEL_REPO,
+        repo_type="model",
+        commit_message=f"Promote {payload['model_version']} (mae={payload['metrics']['mae']:.4f})",
+    )
+    print(f"registry: promoted to champion -- {commit.commit_url}")
+
+
+# --------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------
 def main() -> None:
@@ -319,7 +383,7 @@ def main() -> None:
 
     print(f"area={PRICE_AREA}  target={TARGET}")
 
-    payload, _ = train_and_evaluate_model(
+    payload, test = train_and_evaluate_model(
         PRICE_AREA, TRAIN_START_DATE, TRAIN_END_DATE
     )
 
@@ -327,6 +391,31 @@ def main() -> None:
         pickle.dump(payload, fh)
 
     print(f"\nwrote {MODEL_PATH}")
+
+    # Promote only if the challenger clears both bars: the naive baseline
+    # (card #47) and the current champion, re-scored on this run's own
+    # test set so the comparison is apples-to-apples, not two MAEs from
+    # two different historical periods.
+    beats_naive = payload["metrics"]["mae"] < payload["metrics"]["naive_mae"]
+    champion = download_champion()
+
+    if not beats_naive:
+        promote, verdict = False, "challenger loses to the naive baseline"
+    elif champion is None:
+        promote, verdict = True, "no champion to beat"
+    else:
+        champion_pred = champion["model"].predict(test[FEATURES])
+        champion_mae = mean_absolute_error(test["y"], champion_pred)
+        promote = payload["metrics"]["mae"] < champion_mae
+        verdict = (
+            f"challenger MAE {payload['metrics']['mae']:.4f} vs "
+            f"champion MAE {champion_mae:.4f} (same test set) -- "
+            f"{'challenger wins' if promote else 'champion stays'}"
+        )
+
+    print(f"\n{verdict}")
+    if promote:
+        upload_challenger(payload)
     print(f"model_version  {payload['model_version']}")
     print(json.dumps(payload["metrics"], indent=2))
 
