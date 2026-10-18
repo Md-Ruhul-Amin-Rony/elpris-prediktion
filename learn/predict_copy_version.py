@@ -21,7 +21,12 @@ from train_copy_version import FEATURES
 
 load_dotenv()
 
-AREA = os.environ["PRICE_AREA"]
+# os.getenv, not os.environ[...]: this module is imported by tests for its
+# pure functions (is_weather_forecast, build_feature_snapshot), which don't
+# need any of this -- a hard KeyError here would fail that import in any
+# environment without PRICE_AREA set (e.g. CI's lint/test job, which has no
+# .env and no reason to need one). main() checks AREA itself before using it.
+AREA = os.getenv("PRICE_AREA")
 TARGET = os.getenv("TARGET", "mean")
 HF_TOKEN = os.getenv("HF_TOKEN")
 HF_MODEL_REPO = os.getenv("HF_MODEL_REPO")
@@ -60,7 +65,30 @@ def load_unresolved_row(conn, area: str) -> pd.Series:
     return df.iloc[0]
 
 
+def is_weather_forecast(row: pd.Series) -> bool:
+    """True if this row's weather came from a forecast, not a measurement.
+
+    Either count being exactly 0 means that variable has zero real hours
+    behind it -- see fill_forecast_gaps in features_copy_version.py.
+    """
+    return bool(row["n_obs_temp"] == 0 or row["n_obs_wind"] == 0)
+
+
+def build_feature_snapshot(row: pd.Series, features: list[str]) -> dict:
+    """The exact feature values fed to the model, frozen for traceability.
+
+    feat__daily is overwritten nightly (forecast weather becomes real
+    observed weather once the day passes), so without this snapshot
+    "which data was this prediction built on" becomes unanswerable within
+    a day or two of asking.
+    """
+    return {col: (None if pd.isna(row[col]) else float(row[col])) for col in features}
+
+
 def main() -> None:
+    if not AREA:
+        raise SystemExit("PRICE_AREA is not set.")
+
     payload, model_revision = load_champion()
     model = payload["model"]
 
@@ -71,10 +99,8 @@ def main() -> None:
         x = pd.DataFrame([row[FEATURES].astype(float)], columns=FEATURES)
         predicted_value = float(model.predict(x)[0])
 
-        weather_is_forecast = bool(row["n_obs_temp"] == 0 or row["n_obs_wind"] == 0)
-        feature_snapshot = {
-            col: (None if pd.isna(row[col]) else float(row[col])) for col in FEATURES
-        }
+        weather_is_forecast = is_weather_forecast(row)
+        feature_snapshot = build_feature_snapshot(row, FEATURES)
 
         with conn, conn.cursor() as cur:
             cur.execute(
