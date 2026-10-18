@@ -22,7 +22,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy scikit-learn requests psycopg2-binary python-dotenv tzdata
+          pip install pandas numpy scikit-learn requests psycopg2-binary python-dotenv tzdata huggingface-hub
 
       - name: Run bronze ingestion (learn/ingest_copy_version.py)
         env:
@@ -51,3 +51,17 @@ jobs:
           PRICE_AREA: ${{ vars.PRICE_AREA }}
           STATION_ID: ${{ vars.STATION_ID }}
         run: python learn/build_gold_copy_version.py
+
+      - name: Predict from the champion (learn/predict_copy_version.py)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PRICE_AREA: ${{ vars.PRICE_AREA }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_MODEL_REPO: ${{ vars.HF_MODEL_REPO }}
+        run: python learn/predict_copy_version.py
+
+      - name: Resolve predictions against outcomes (learn/monitor_copy_version.py)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PRICE_AREA: ${{ vars.PRICE_AREA }}
+        run: python learn/monitor_copy_version.py
