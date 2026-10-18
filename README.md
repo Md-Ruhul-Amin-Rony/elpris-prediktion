@@ -1,165 +1,175 @@
-# Startrepo — elprisprediktion
+# Elpris SE3 — day-ahead price prediction
 
-Data engineering och Agila metoder (YH-02032), grupprojekt vecka 3–9.
+A solo rebuild of a course starter repo (YH-02032, *Data engineering och
+Agila metoder*) into a working, automated, end-to-end pipeline: ingest real
+weather and electricity-price data, engineer features — including a live
+weather forecast for the one day that hasn't happened yet — train and
+register a model on Hugging Face Hub, predict daily, and monitor real
+accuracy over time, with a small FastAPI service and dashboard to see all
+of it.
 
-Det här repot är utgångspunkten, inte lösningen. Ni får en färdigtränad
-modell och en fungerande men medvetet ofullständig träningspipeline.
-Allt runt omkring den är ert jobb — se projektbeskrivningen, avsnitt 3.
+**Everything active lives under `learn/` and `api/`.** `model/` and most of
+`docs/` are the original starter repo, kept for reference — see
+[What's here from the original starter repo](#whats-here-from-the-original-starter-repo).
 
----
+## Architecture
 
-## Snabbstart
-
-```bash
-cp .env.example .env          # fyll i PRICE_AREA och TARGET
-uv sync                       # eller: pip install -e .
-uv run python model/train.py
+```
+SMHI (weather) ──┐
+                  ├──▶ raw__weather / raw__elpris      Bronze: untouched, append-only
+elprisetjustnu ───┘            │
+                          silver__weather / silver__elpris   Silver: deduped, typed views
+                                │
+SMHI forecast ───▶ stg__forecast ──▶ silver__forecast        │
+                                │                             │
+                                └──────────────┬──────────────┘
+                                                ▼
+                                        feat__daily        Gold: one row per day to predict
+                                                │
+                                  ┌─────────────┴──────────────┐
+                                  ▼                             ▼
+                    train_copy_version.py              predict_copy_version.py
+                    weekly, champion/challenger          daily, from the champion
+                                  │                             │
+                                  ▼                             ▼
+                    Hugging Face Hub model repo          learn.predictions      Component D: traceability
+                                                                  │
+                                                                  ▼
+                                                   monitor_daily / monitor_rolling   Component E: monitoring
+                                                                  │
+                                                                  ▼
+                                                        FastAPI (api/) + dashboard
 ```
 
-Det ska skriva ut en utvärdering och lägga en ny `model/model.pkl`. Går det
-igenom har ni en fungerande miljö.
+## Why a weather forecast at all?
 
-Öppna sedan `model/utforskning.ipynb`. **Kör den innan ni börjar bygga** —
-nästan varje beslut i sprint 1 har sin grund i något som syns där.
+The newest row in `feat__daily` — the only one actually worth predicting —
+can never have *observed* weather for its own day, because that day hasn't
+happened yet. `learn/forecast_ingest_copy_version.py` fetches SMHI's point
+forecast, and `fill_forecast_gaps()` in `features_copy_version.py` fills in
+only the cells that are genuinely missing — it never overwrites a real
+observation. The full reasoning (and the training/serving skew this
+creates, and how `train_copy_version.py` excludes forecast-based rows from
+training) is in `docs/validation.md`.
 
----
-
-## Innehåll
-
-| Fil | Vad det är |
-|---|---|
-| `model/train.py` | Baslinjens träningspipeline. Fungerar. Läs `LIMITATIONS` längst ner i filen. |
-| `model/utforskning.ipynb` | Rundtur i datan, med problemen utpekade. |
-| `model/model.pkl` | Färdigtränad basmodell (SE3, target `mean`). |
-| `data/historik_elpris.csv.gz` | Prishistorik. **Syntetisk tills ni byter ut den** — se nedan. |
-| `data/historik_vader.csv.gz` | Väderhistorik. Samma sak. |
-| `data/fetch_historik.py` | Hämtar riktig data från elprisetjustnu.se och SMHI. |
-| `data/generate_synthetic_historik.py` | Genererade platshållardatan. Ni behöver den inte. |
-| `db/schema.sql` | Startschema för bronze-tabellerna i er egen Postgres. |
-| `.env.example` | Mall för konfiguration och hemligheter. |
-
----
-
-## ⚠️ Datan är syntetisk tills ni hämtar riktig
-
-`data/historik_elpris.csv.gz` och `data/historik_vader.csv.gz` innehåller
-**påhittade siffror**. De finns där för att repot ska gå att köra direkt
-efter en klon, innan någon pratat med ett API.
-
-Formen är identisk med källorna — samma kolumnnamn, samma separatorer, samma
-tidskonventioner, samma upplösningsbyte, samma sorters hål — så kod som
-skrivs mot dem fortsätter fungera när ni byter ut innehållet. Men siffrorna
-går inte att dra slutsatser av.
-
-Byt ut dem tidigt:
+## Quickstart
 
 ```bash
-uv run python data/fetch_historik.py --from 2024-08-01 --to 2026-08-20
+cp .env.example .env     # fill in PRICE_AREA, STATION_ID, DATABASE_URL, HF_TOKEN, HF_MODEL_REPO
+uv sync --extra dev --extra api
 ```
 
-Det tar 25–40 minuter för alla fyra elområden (ett anrop per dygn och
-område, med paus emellan — API:erna är gratis och drivs för allas skull).
-Hämta bara ert eget område om ni har bråttom:
+Apply the schema once, in order, against your own Postgres (Supabase/Neon
+both work) — six small files, run each one in your DB's SQL console or via
+`psql`:
+
+```
+learn/db/01_bronze_copy_version.sql
+learn/db/02_silver_copy_version.sql
+learn/db/03_gold_copy_version.sql
+learn/db/04_forecast_copy_version.sql
+learn/db/05_predictions_copy_version.sql
+learn/db/06_monitor_copy_version.sql
+```
+
+Then, once, backfill history:
 
 ```bash
-uv run python data/fetch_historik.py --areas SE3 --from 2025-01-01
+uv run python learn/backfill_prices_copy_version.py 2024-08-01 2026-10-01
+uv run python learn/weather_backfill_copy_version.py 2024-08-01
 ```
 
-**Stationskoder:** bara station 98230 (Stockholm-Observatoriekullen A) är
-verifierad mot API:et. Övriga tre i tabellen är platshållare. Slå upp rätt
-nyckel innan ni hämtar:
+From there the daily and weekly workflows below take over.
+
+## The daily pipeline
+
+Automated: `.github/workflows/learn_daily_pipeline.yml`, 22:00 UTC and on
+manual dispatch. In order:
+
+1. **`ingest_copy_version.py`** — today's weather and the latest published prices
+2. **`forecast_ingest_copy_version.py`** — SMHI's forecast for the next few days
+3. **`validate_copy_version.py`** — checks Silver against the calendar; fails the run if the last 2 days don't look right, so a bad run never silently feeds the next step
+4. **`build_gold_copy_version.py`** — rebuilds `feat__daily`, filling the one unresolved row's weather from the forecast
+5. **`predict_copy_version.py`** — downloads the current champion model, predicts the still-unresolved day, logs it with full traceability
+6. **`monitor_copy_version.py`** — resolves any predictions whose real price is now known
+
+## The weekly training pipeline
+
+Automated: `.github/workflows/learn_train_pipeline.yml`, Sunday 23:30 UTC.
+`train_copy_version.py` trains a fresh `HistGradientBoostingRegressor`,
+re-scores the *current* Hugging Face champion on this run's own test set —
+not a stale number from whenever it was last trained — and only promotes
+the new model if it beats **both** the naive baseline and the champion. A
+tie doesn't promote; there's no reason to replace a working champion with
+an identical one.
+
+## Component D — traceability
+
+Every row in `learn.predictions` answers, permanently: which data
+(`feature_snapshot`, frozen at prediction time — `feat__daily` gets
+overwritten nightly, so a live pointer would stop being true within a
+day), which model (`model_version`, `model_revision` — the exact Hugging
+Face commit used), which code (`git_sha` — the commit the champion was
+*trained* at), and when (`predicted_at`).
+
+## Component E — monitoring
+
+`learn.monitor_daily` resolves each prediction against its real outcome
+once known, scored against the **earliest** prediction made for that day
+— a later same-day re-prediction had more information available and
+isn't a fair test of forecast skill. `learn.monitor_rolling` turns that
+into a 7-day/30-day rolling MAE and bias time series, with the day-count
+behind each window exposed so an early, thin window is never mistaken for
+a stable figure.
+
+## The API and dashboard
 
 ```bash
-uv run python data/fetch_historik.py --find-station "Lulea"
+uv run uvicorn api.main:app --reload
 ```
 
----
+`/health`, `/api/latest`, `/api/history`, `/api/monitor/rolling` — and `/`
+serves a small dashboard: the live prediction with a delta vs. today's
+known price and the forecast weather behind it, rolling-accuracy stat
+cards, and two charts. One static HTML file, no separate frontend build.
 
-## Vad som är avsiktligt trasigt
+## Testing
 
-Ingen av följande är buggar. Alla finns i den riktiga datan också, och att
-hantera dem är en stor del av vad lärandemål 15 bedömer.
+```bash
+uv run pytest
+uv run ruff check .
+```
 
-1. **Ett dygn har inte 24 rader.** Sverige gick från timpris till kvartspris
-   1 oktober 2025. Före: 24 punkter per dygn. Efter: 96. Kod som antar 24
-   går sönder tyst mitt i er träningsdata.
+Pure-function logic — calendar math, feature aggregation, the forecast
+fill, the prediction-snapshot logic — is covered in `tests/`. Anything
+that's mostly a database round trip (`monitor_copy_version.py`'s single
+SQL statement, the ingestion scripts) is instead verified by hand against
+the real database rather than mocked; see commit history for how.
 
-2. **Sommartid.** Sista söndagen i mars har 23 timmar, sista i oktober 25.
-   "Dela med 24" är fel två gånger om året.
+## What's here from the original starter repo
 
-3. **Två tidskonventioner.** Priser kommer i lokal svensk tid med explicit
-   UTC-offset. SMHI kommer i UTC helt utan offsetmarkör. Slår man ihop dem
-   naivt hamnar man en till två timmar fel — utan att något kraschar.
+`model/train.py`, `model/model.pkl`, `model/utforskning.ipynb`,
+`model/build_notebook.py` are the original course-provided baseline —
+kept as reference, not part of the active pipeline (`model/train.py` has
+been repointed to read from `learn.feat__daily` so it still runs, but
+`learn/train_copy_version.py` is the real one). `docs/PROJECT_PLAN.md` and
+`docs/sprint1.md` describe the original team plan from before this became
+a solo rebuild under `learn/`. `docs/governance.md` and `docs/etik.md`
+(data governance and ethics) still apply as written.
 
-4. **Luckor i väderdatan.** Enstaka timmar saknas, och några flerdygns-
-   avbrott. Interpolering är rimlig för det ena och tveksam för det andra.
+## Known limitations / next steps
 
-5. **Kvalitetskoder.** SMHI märker varje värde G (kontrollerat) eller Y
-   (misstänkt eller aggregerat). Ungefär en femtedel är Y. `train.py`
-   behandlar dem lika. Är det rätt?
-
-6. **Negativa priser och spikar.** Både under noll och tio gånger normalt
-   förekommer på riktigt. Att klippa bort dem utan att tänka förstör modellen.
-
-7. **Dubbletter.** Ominhämtning lämnar exakta dubbletter. De måste bort före
-   aggregering, annars viktas en timme dubbelt.
-
----
-
-## Informationsgränsen — läs det här
-
-Det enskilt viktigaste i hela uppgiften.
-
-När ni predicerar en dag D vet ni: priser observerade till och med D, väder
-observerat till och med D, och en **prognos** för morgondagens väder. Ni vet
-inte morgondagens priser — källan publicerar dem först runt 13:00 dag D.
-
-`train.py` använder morgondagens *observerade* temperatur som stand-in för
-morgondagens *prognos*. Det är försvarbart vid träning och osant vid drift,
-eftersom ni i produktion har en prognos med fel i, inte facit. Modellen ser
-därför bättre ut i utvärderingen än den presterar i verkligheten.
-
-Att kvantifiera det gapet är ett bra användande av en sprint.
-
----
-
-## Om målvariabeln `peak`
-
-Har ert team `TARGET=peak` är ni på ett svårare problem än `mean`, och det är
-meningen. Två saker att veta i förväg:
-
-- **Definitionen byter innebörd 2025-10-01.** Före det datumet är toppen den
-  dyraste *timmen*; efter är den den dyraste *kvarten*, som systematiskt
-  ligger högre. Brytpunkten sitter mitt i träningsdatan. `train.py` gör
-  ingenting åt det. Att resampla allt till timupplösning först är en lösning;
-  att bara träna på data efter bytet är en annan; att strunta i det är ingen.
-
-- **R² kan bli negativt** samtidigt som modellen slår den naiva baslinjen.
-  Det är inte ett fel i koden. Dygnstoppen drivs av knapphetshändelser som
-  inte går att förutsäga ur temperatur, så modellen predicerar nära ett
-  medelvärde — vilket slår "imorgon blir som idag" men förklarar mindre
-  varians än att bara gissa medelvärdet. Fundera på vad det säger om
-  problemet, och på om MAE eller R² är rätt mått för det ni faktiskt vill.
-
----
-
-## Databasen
-
-`db/schema.sql` skapar de två bronze-tabellerna. Kör den en gång mot er egen
-Neon- eller Supabase-databas.
-
-Er features-tabell och er predictions-tabell finns medvetet **inte** där.
-Dem designar ni själva när ni bestämt vad en feature-rad är för just ert
-target — det beslutet är en del av uppgiften.
-
----
-
-## Vad ni inte ska göra
-
-- Ni ska inte träna fram en egen modell från grunden. Modellen får ni.
-- Ni ska inte förbättra modellens träffsäkerhet som självändamål. Kursen
-  handlar om infrastrukturen runt modellen, inte om modellering.
-- Ni ska inte lägga till fler tjänster för att imponera. Fler komponenter än
-  projektbeskrivningens avsnitt 3 ger inte högre betyg.
-
-Frågor mellan lektionerna: kursens Teams-kanal, gärna öppet.
+- **Single price area, with two hardcoded assumptions.**
+  `forecast_ingest_copy_version.py`'s `STATION_COORDS` only has
+  coordinates for station 97400, and `train_copy_version.py` never checks
+  that `STATION_ID` actually matches the station `AREA_STATIONS[PRICE_AREA]`
+  expects. Changing `PRICE_AREA` without fixing both is a **silent**
+  correctness bug, not a crash.
+- **One Hugging Face repo, not one per area.** `HF_MODEL_REPO` isn't
+  area-specific — switching `PRICE_AREA` without also switching the
+  registry would compare a new model against a champion trained for a
+  different market, silently.
+- **No on-demand inference** — `predict_copy_version.py` runs once a day
+  on schedule; there's no "predict right now" endpoint yet.
+- **Orchestration**: planned move to Airflow for the scheduling currently
+  done via GitHub Actions cron.
