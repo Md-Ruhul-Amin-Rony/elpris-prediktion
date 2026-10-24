@@ -138,10 +138,17 @@ def history(days: int = 30):
 
 @app.get("/api/monitor/rolling")
 def monitor_rolling(days: int = 30):
-    """Rolling 7-day/30-day accuracy as a time series, oldest first."""
+    """Rolling 7-day/30-day accuracy as a time series, oldest first.
+
+    naive_mae_* is the "tomorrow = today" baseline over the same window --
+    card #47's own bar for "is this model actually good" -- so the UI can
+    say something honest about performance instead of a bare MAE number
+    with no reference point.
+    """
     rows = fetch_all(
         """
-        SELECT target_date, mae_7d, bias_7d, n_days_7d, mae_30d, n_days_30d
+        SELECT target_date, mae_7d, bias_7d, n_days_7d, mae_30d, n_days_30d,
+               naive_mae_7d, naive_mae_30d
         FROM learn.monitor_rolling
         WHERE price_area = %s AND target = %s
         ORDER BY target_date DESC

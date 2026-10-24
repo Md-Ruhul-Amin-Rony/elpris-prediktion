@@ -15,19 +15,25 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-AREA = os.environ["PRICE_AREA"]
+# os.getenv, not os.environ[...]: consistent with the other learn/ scripts
+# that got imported elsewhere -- this one isn't imported anywhere yet, but
+# there's no reason to leave the same trap lying around for later.
+AREA = os.getenv("PRICE_AREA")
 
 UPSERT_SQL = """
     INSERT INTO learn.monitor_daily (
         price_area, target_date, target,
         prediction_id, predicted_value, actual_value,
-        error, abs_error, weather_is_forecast
+        error, abs_error, weather_is_forecast,
+        naive_value, naive_abs_error
     )
     SELECT
         p.price_area, p.target_date, p.target,
         p.id, p.predicted_value, f.y,
         p.predicted_value - f.y, abs(p.predicted_value - f.y),
-        p.weather_is_forecast
+        p.weather_is_forecast,
+        (p.feature_snapshot->>'price_today')::numeric,
+        abs((p.feature_snapshot->>'price_today')::numeric - f.y)
     FROM learn.predictions p
     JOIN learn.feat__daily f
       ON f.price_area = p.price_area AND f.target_date = p.target_date
@@ -48,11 +54,15 @@ UPSERT_SQL = """
         error = EXCLUDED.error,
         abs_error = EXCLUDED.abs_error,
         weather_is_forecast = EXCLUDED.weather_is_forecast,
+        naive_value = EXCLUDED.naive_value,
+        naive_abs_error = EXCLUDED.naive_abs_error,
         resolved_at = now()
 """
 
 
 def main() -> None:
+    if not AREA:
+        raise SystemExit("PRICE_AREA is not set.")
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
     try:
         with conn, conn.cursor() as cur:
