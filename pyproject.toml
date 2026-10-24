@@ -9,15 +9,17 @@ dependencies = [
     "scikit-learn>=1.5",
     "python-dotenv>=1.0",
     "requests>=2.32",
-    "matplotlib>=3.8",
-    "duckdb>=1.0",
     "psycopg2-binary>=2.9",
     "huggingface-hub>=1.28.0",
 ]
 
 [project.optional-dependencies]
-# Behövs för att köra notebooken.
-notebook = ["jupyter>=1.0", "ipykernel>=6.29"]
+# Behövs för att köra notebooken. matplotlib/duckdb moved here from base
+# deps: nothing outside model/build_notebook.py and the notebook itself
+# uses either (duckdb wasn't actually imported anywhere), and the API's
+# Docker image was carrying both for no reason -- uv sync --extra api
+# never needed them.
+notebook = ["jupyter>=1.0", "ipykernel>=6.29", "matplotlib>=3.8", "duckdb>=1.0"]
 # Från vecka 5, för modellregistret.
 hub = ["huggingface-hub>=0.24"]
 # Från vecka 6, om ni väljer att bygga inferenstjänsten här i repot.

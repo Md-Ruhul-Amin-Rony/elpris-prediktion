@@ -1,0 +1,16 @@
+.venv
+.git
+.github
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.env
+.env.example
+tests
+docs
+model
+learn/db
+learn/*.pkl
+README.md
+uv.lock.bak_temp
