@@ -85,45 +85,70 @@ def build_feature_snapshot(row: pd.Series, features: list[str]) -> dict:
     return {col: (None if pd.isna(row[col]) else float(row[col])) for col in features}
 
 
+def predict_and_log(conn, area: str, target: str) -> dict:
+    """Run one prediction from the current champion and log it.
+
+    The one place this logic lives -- called by main() for the scheduled
+    daily run, and by api/main.py's POST /api/predict for an on-demand one.
+    Returns the same shape as the API's GET /api/latest, so either caller
+    can render the result without a second round trip.
+    """
+    payload, model_revision = load_champion()
+    model = payload["model"]
+
+    row = load_unresolved_row(conn, area)
+
+    x = pd.DataFrame([row[FEATURES].astype(float)], columns=FEATURES)
+    predicted_value = float(model.predict(x)[0])
+
+    weather_is_forecast = is_weather_forecast(row)
+    feature_snapshot = build_feature_snapshot(row, FEATURES)
+
+    with conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO learn.predictions (
+                price_area, target_date, target, predicted_value,
+                feature_snapshot, weather_is_forecast, feature_built_at,
+                model_version, feature_version, model_revision, git_sha
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING predicted_at
+            """,
+            (
+                area, row["target_date"], target, predicted_value,
+                Json(feature_snapshot), weather_is_forecast, row["built_at"],
+                payload["model_version"], payload["feature_version"],
+                model_revision, payload["git_sha"],
+            ),
+        )
+        predicted_at = cur.fetchone()[0]
+
+    return {
+        "target_date": row["target_date"].isoformat(),
+        "predicted_value": predicted_value,
+        "weather_is_forecast": weather_is_forecast,
+        "model_version": payload["model_version"],
+        "model_revision": model_revision,
+        "predicted_at": predicted_at.isoformat(),
+        "price_today": feature_snapshot.get("price_today"),
+        "tomorrow_temp_mean": feature_snapshot.get("tomorrow_temp_mean"),
+        "tomorrow_wind_mean": feature_snapshot.get("tomorrow_wind_mean"),
+    }
+
+
 def main() -> None:
     if not AREA:
         raise SystemExit("PRICE_AREA is not set.")
 
-    payload, model_revision = load_champion()
-    model = payload["model"]
-
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
     try:
-        row = load_unresolved_row(conn, AREA)
-
-        x = pd.DataFrame([row[FEATURES].astype(float)], columns=FEATURES)
-        predicted_value = float(model.predict(x)[0])
-
-        weather_is_forecast = is_weather_forecast(row)
-        feature_snapshot = build_feature_snapshot(row, FEATURES)
-
-        with conn, conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO learn.predictions (
-                    price_area, target_date, target, predicted_value,
-                    feature_snapshot, weather_is_forecast, feature_built_at,
-                    model_version, feature_version, model_revision, git_sha
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    AREA, row["target_date"], TARGET, predicted_value,
-                    Json(feature_snapshot), weather_is_forecast, row["built_at"],
-                    payload["model_version"], payload["feature_version"],
-                    model_revision, payload["git_sha"],
-                ),
-            )
+        result = predict_and_log(conn, AREA, TARGET)
     finally:
         conn.close()
 
     print(
-        f"predicted {AREA} {row['target_date']} {TARGET} = {predicted_value:.4f}"
-        f" (model {payload['model_version']}, weather_is_forecast={weather_is_forecast})"
+        f"predicted {AREA} {result['target_date']} {TARGET} = {result['predicted_value']:.4f}"
+        f" (model {result['model_version']}, weather_is_forecast={result['weather_is_forecast']})"
     )
 
 

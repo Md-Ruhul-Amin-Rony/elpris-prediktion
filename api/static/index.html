@@ -146,14 +146,56 @@
   @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
   .hero {
+    position: relative;
+    overflow: hidden;
+    border-image: none;
+    min-height: 118px;
+  }
+  .hero-content {
     display: grid;
     grid-template-columns: 1fr auto;
     gap: 18px;
     align-items: center;
-    position: relative;
-    overflow: hidden;
-    border-image: none;
   }
+  .hero-gate {
+    text-align: center;
+    padding-block: 10px;
+    position: relative;
+    z-index: 1;
+  }
+  .hero-gate .label { text-align: center; }
+  .hero-gate .gate-hint {
+    color: var(--text-dim);
+    font-size: 13px;
+    margin: 0 0 16px;
+  }
+  .reveal-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 11px 22px;
+    border-radius: 999px;
+    border: none;
+    background: linear-gradient(135deg, var(--brand-1), var(--brand-2));
+    color: #1a1206;
+    font: inherit;
+    font-size: 14.5px;
+    font-weight: 750;
+    cursor: pointer;
+    box-shadow: 0 6px 20px color-mix(in srgb, var(--brand-1) 35%, transparent);
+    transition: transform .15s ease, box-shadow .15s ease;
+  }
+  .reveal-btn:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 10px 26px color-mix(in srgb, var(--brand-1) 45%, transparent); }
+  .reveal-btn:disabled { opacity: .7; cursor: default; transform: none; }
+  .reveal-btn .spin {
+    width: 13px; height: 13px;
+    border: 2px solid #1a1206;
+    border-right-color: transparent;
+    border-radius: 50%;
+    display: none;
+    animation: spin .7s linear infinite;
+  }
+  .reveal-btn.loading .spin { display: inline-block; }
   .hero::before {
     content: "";
     position: absolute; inset: 0;
@@ -301,6 +343,40 @@
     font-size: 11px;
   }
 
+  .predict-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    margin-top: 14px;
+    padding: 8px 16px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 650;
+    cursor: pointer;
+    transition: transform .15s ease, background .15s ease, border-color .15s ease;
+  }
+  .predict-btn:hover:not(:disabled) { background: var(--accent-weak); border-color: transparent; transform: translateY(-1px); }
+  .predict-btn:disabled { opacity: .6; cursor: default; transform: none; }
+  .predict-btn .spin {
+    width: 12px; height: 12px;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    display: none;
+    animation: spin .7s linear infinite;
+  }
+  .predict-btn.loading .spin { display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .predict-error {
+    font-size: 12.5px;
+    color: var(--bad);
+    margin-top: 8px;
+  }
+
   .skeleton {
     background: linear-gradient(90deg, var(--surface-2) 25%, var(--border) 37%, var(--surface-2) 63%);
     background-size: 400% 100%;
@@ -325,15 +401,28 @@
   </header>
 
   <section class="card hero" style="animation-delay:.02s">
-    <div>
-      <p class="label">Predicted price, tomorrow</p>
-      <p class="value skeleton" id="hero-value">0.0000 SEK/kWh</p>
-      <div id="hero-delta"></div>
-      <div class="meta" id="hero-meta"></div>
+    <div class="hero-gate" id="hero-gate">
+      <p class="label">Tomorrow's price</p>
+      <p class="gate-hint">Nothing is shown until you ask for it.</p>
+      <button class="reveal-btn" id="reveal-btn" onclick="revealPrediction()">
+        <span class="spin"></span><span class="reveal-label">⚡ Show predicted price</span>
+      </button>
+      <div class="predict-error" id="predict-error" hidden></div>
     </div>
-    <div class="hero-date">
-      <div class="rel" id="hero-rel">&nbsp;</div>
-      <div class="day skeleton" id="hero-date">—</div>
+    <div class="hero-content" id="hero-content" hidden>
+      <div>
+        <p class="label">Predicted price, tomorrow</p>
+        <p class="value" id="hero-value">0.0000 SEK/kWh</p>
+        <div id="hero-delta"></div>
+        <div class="meta" id="hero-meta"></div>
+        <button class="predict-btn" id="predict-btn" onclick="predictNow()">
+          <span class="spin"></span><span>⟲ Predict again</span>
+        </button>
+      </div>
+      <div class="hero-date">
+        <div class="rel" id="hero-rel">&nbsp;</div>
+        <div class="day" id="hero-date">—</div>
+      </div>
     </div>
   </section>
 
@@ -448,45 +537,83 @@ async function loadHealth() {
   }
 }
 
-async function loadLatest() {
+function renderLatest(p) {
+  document.getElementById("hero-date").classList.remove("skeleton");
+  document.getElementById("hero-date").textContent = fmtDate(p.target_date);
+  document.getElementById("hero-rel").textContent = relDay(p.target_date);
+  document.getElementById("model-version").textContent = p.model_version;
+
+  const valueEl = document.getElementById("hero-value");
+  valueEl.classList.remove("skeleton");
+  countUp(valueEl, Number(p.predicted_value));
+
+  const deltaEl = document.getElementById("hero-delta");
+  if (p.price_today !== null && p.price_today !== undefined) {
+    const diff = Number(p.predicted_value) - Number(p.price_today);
+    const pct = (diff / Number(p.price_today)) * 100;
+    const dir = diff >= 0 ? "up" : "down";
+    const arrow = diff >= 0 ? "▲" : "▼";
+    deltaEl.innerHTML = `<span class="delta ${dir}">${arrow} ${fmt(Math.abs(diff), 3)} SEK/kWh (${Math.abs(pct).toFixed(0)}%) vs today</span>`;
+  } else {
+    deltaEl.innerHTML = "";
+  }
+
+  const chips = [];
+  chips.push(p.weather_is_forecast
+    ? `<span class="chip forecast">◆ forecast weather</span>`
+    : `<span class="chip observed">◆ observed weather</span>`);
+  if (p.tomorrow_temp_mean !== null && p.tomorrow_temp_mean !== undefined) {
+    chips.push(`<span class="chip">🌡 ${Number(p.tomorrow_temp_mean).toFixed(1)}°C</span>`);
+  }
+  if (p.tomorrow_wind_mean !== null && p.tomorrow_wind_mean !== undefined) {
+    chips.push(`<span class="chip">💨 ${Number(p.tomorrow_wind_mean).toFixed(1)} m/s</span>`);
+  }
+  const predictedAt = new Date(p.predicted_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  chips.push(`<span>predicted ${predictedAt}</span>`);
+  document.getElementById("hero-meta").innerHTML = chips.join("");
+}
+
+async function revealPrediction() {
+  const btn = document.getElementById("reveal-btn");
+  const errEl = document.getElementById("predict-error");
+  btn.disabled = true;
+  btn.classList.add("loading");
+  errEl.hidden = true;
   try {
     const p = await getJSON("/api/latest");
-    document.getElementById("hero-date").classList.remove("skeleton");
-    document.getElementById("hero-date").textContent = fmtDate(p.target_date);
-    document.getElementById("hero-rel").textContent = relDay(p.target_date);
-    document.getElementById("model-version").textContent = p.model_version;
+    document.getElementById("hero-gate").hidden = true;
+    document.getElementById("hero-content").hidden = false;
+    renderLatest(p);
+  } catch (err) {
+    errEl.textContent = `Could not load a prediction: ${err.message}`;
+    errEl.hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove("loading");
+  }
+}
 
-    const valueEl = document.getElementById("hero-value");
-    valueEl.classList.remove("skeleton");
-    countUp(valueEl, Number(p.predicted_value));
-
-    const deltaEl = document.getElementById("hero-delta");
-    if (p.price_today !== null && p.price_today !== undefined) {
-      const diff = Number(p.predicted_value) - Number(p.price_today);
-      const pct = (diff / Number(p.price_today)) * 100;
-      const dir = diff >= 0 ? "up" : "down";
-      const arrow = diff >= 0 ? "▲" : "▼";
-      deltaEl.innerHTML = `<span class="delta ${dir}">${arrow} ${fmt(Math.abs(diff), 3)} SEK/kWh (${Math.abs(pct).toFixed(0)}%) vs today</span>`;
-    } else {
-      deltaEl.innerHTML = "";
+async function predictNow() {
+  const btn = document.getElementById("predict-btn");
+  const errEl = document.getElementById("predict-error");
+  btn.disabled = true;
+  btn.classList.add("loading");
+  errEl.hidden = true;
+  try {
+    const res = await fetch("/api/predict", { method: "POST" });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || `request failed (${res.status})`);
     }
-
-    const chips = [];
-    chips.push(p.weather_is_forecast
-      ? `<span class="chip forecast">◆ forecast weather</span>`
-      : `<span class="chip observed">◆ observed weather</span>`);
-    if (p.tomorrow_temp_mean !== null && p.tomorrow_temp_mean !== undefined) {
-      chips.push(`<span class="chip">🌡 ${Number(p.tomorrow_temp_mean).toFixed(1)}°C</span>`);
-    }
-    if (p.tomorrow_wind_mean !== null && p.tomorrow_wind_mean !== undefined) {
-      chips.push(`<span class="chip">💨 ${Number(p.tomorrow_wind_mean).toFixed(1)} m/s</span>`);
-    }
-    const predictedAt = new Date(p.predicted_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-    chips.push(`<span>predicted ${predictedAt}</span>`);
-    document.getElementById("hero-meta").innerHTML = chips.join("");
-  } catch {
-    document.getElementById("hero-value").textContent = "no prediction yet";
-    document.getElementById("hero-value").classList.remove("skeleton");
+    renderLatest(await res.json());
+    loadHistory();
+    loadRolling();
+  } catch (err) {
+    errEl.textContent = `Could not predict right now: ${err.message}`;
+    errEl.hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove("loading");
   }
 }
 
@@ -573,7 +700,9 @@ async function loadRolling() {
 }
 
 async function loadAll() {
-  await Promise.all([loadHealth(), loadLatest(), loadHistory(), loadRolling()]);
+  // Deliberately not loadLatest() here: the prediction stays hidden until
+  // the user clicks "Show predicted price" in the hero, not auto-revealed.
+  await Promise.all([loadHealth(), loadHistory(), loadRolling()]);
   document.getElementById("loaded-at").textContent = new Date().toLocaleTimeString();
 }
 

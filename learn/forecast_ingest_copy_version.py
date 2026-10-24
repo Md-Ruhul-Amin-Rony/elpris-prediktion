@@ -22,7 +22,10 @@ from psycopg2.extras import Json, execute_values
 
 load_dotenv()
 
-STATION = os.environ["STATION_ID"]
+# os.getenv, not os.environ[...]: this module gets imported by api/main.py
+# for fetch_and_store_forecast() -- a hard KeyError here would break that
+# import in any environment without STATION_ID set. main() checks it itself.
+STATION = os.getenv("STATION_ID")
 STOCKHOLM = ZoneInfo("Europe/Stockholm")
 
 # SMHI gives forecasts by point (lon, lat), not station id.
@@ -54,12 +57,19 @@ def fetch_forecast(lon, lat):
     return r.json()
 
 
-def main():
-    if STATION not in STATION_COORDS:
+def fetch_and_store_forecast(conn, station: str) -> dict:
+    """Fetch SMHI's point forecast for one station and append it to stg__forecast.
+
+    The one place this logic lives -- called by main() for the scheduled
+    daily run, and by api/main.py's POST /api/predict to refresh the
+    forecast before predicting on demand, instead of predicting from
+    whatever forecast happened to be fetched last night.
+    """
+    if station not in STATION_COORDS:
         raise SystemExit(
-            f"No coordinates for station {STATION}. Add it to STATION_COORDS."
+            f"No coordinates for station {station}. Add it to STATION_COORDS."
         )
-    lon, lat = STATION_COORDS[STATION]
+    lon, lat = STATION_COORDS[station]
 
     payload = fetch_forecast(lon, lat)
     issued_at = datetime.fromisoformat(payload["referenceTime"].replace("Z", "+00:00"))
@@ -75,26 +85,38 @@ def main():
             value = entry["data"].get(smhi_name)
             if value is None:
                 continue
-            rows.append((STATION, parameter, issued_at, valid_at, Json(entry)))
+            rows.append((station, parameter, issued_at, valid_at, Json(entry)))
 
     if not rows:
         raise SystemExit("No forecast rows parsed -- check PARAMETERS against the API response.")
 
+    with conn, conn.cursor() as cur:
+        execute_values(
+            cur,
+            "INSERT INTO learn.stg__forecast"
+            " (station, parameter, issued_at, valid_at, data) VALUES %s",
+            rows,
+        )
+
+    return {
+        "issued_at": issued_at.isoformat(),
+        "rows_inserted": len(rows),
+        "covers_until": cutoff.isoformat(),
+    }
+
+
+def main():
+    if not STATION:
+        raise SystemExit("STATION_ID is not set.")
+
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
     try:
-        with conn:
-            with conn.cursor() as cur:
-                execute_values(
-                    cur,
-                    "INSERT INTO learn.stg__forecast"
-                    " (station, parameter, issued_at, valid_at, data) VALUES %s",
-                    rows,
-                )
+        result = fetch_and_store_forecast(conn, STATION)
     finally:
         conn.close()
 
-    print(f"forecast issued at {issued_at.isoformat()}")
-    print(f"inserted {len(rows)} rows, covering up to {cutoff.isoformat()}")
+    print(f"forecast issued at {result['issued_at']}")
+    print(f"inserted {result['rows_inserted']} rows, covering up to {result['covers_until']}")
 
 
 if __name__ == "__main__":
