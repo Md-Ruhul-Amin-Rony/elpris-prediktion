@@ -198,16 +198,7 @@ that's mostly a database round trip (`monitor_copy_version.py`'s single
 SQL statement, the ingestion scripts) is instead verified by hand against
 the real database rather than mocked; see commit history for how.
 
-## What's here from the original starter repo
 
-`model/train.py`, `model/model.pkl`, `model/utforskning.ipynb`,
-`model/build_notebook.py` are the original course-provided baseline —
-kept as reference, not part of the active pipeline (`model/train.py` has
-been repointed to read from `learn.feat__daily` so it still runs, but
-`learn/train_copy_version.py` is the real one). `docs/PROJECT_PLAN.md` and
-`docs/sprint1.md` describe the original team plan from before this became
-a solo rebuild under `learn/`. `docs/governance.md` and `docs/etik.md`
-(data governance and ethics) still apply as written.
 
 ## Known limitations / next steps
 
