@@ -16,10 +16,21 @@ CREATE TABLE IF NOT EXISTS learn.monitor_daily (
     abs_error                NUMERIC NOT NULL,
     weather_is_forecast      BOOLEAN NOT NULL,
 
+    -- the naive "tomorrow = today" baseline (card #47's own bar for "good"),
+    -- from this prediction's own frozen feature_snapshot -- not a live
+    -- lookup, same reasoning as every other snapshot-sourced field here.
+    naive_value              NUMERIC,
+    naive_abs_error          NUMERIC,
+
     resolved_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     PRIMARY KEY (price_area, target_date, target)
 );
+
+-- Idempotent column add for a table that may already exist from before
+-- naive_value/naive_abs_error were introduced.
+ALTER TABLE learn.monitor_daily ADD COLUMN IF NOT EXISTS naive_value NUMERIC;
+ALTER TABLE learn.monitor_daily ADD COLUMN IF NOT EXISTS naive_abs_error NUMERIC;
 
 -- Rolling view: a time series of 7-day and 30-day rolling accuracy, not a
 -- single static number -- so a dashboard can plot how real-world accuracy
@@ -54,6 +65,14 @@ SELECT
     AVG(abs_error) OVER (
         PARTITION BY price_area, target ORDER BY target_date
         ROWS BETWEEN 29 PRECEDING AND CURRENT ROW
-    ) AS mae_30d
+    ) AS mae_30d,
+    AVG(naive_abs_error) OVER (
+        PARTITION BY price_area, target ORDER BY target_date
+        ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+    ) AS naive_mae_7d,
+    AVG(naive_abs_error) OVER (
+        PARTITION BY price_area, target ORDER BY target_date
+        ROWS BETWEEN 29 PRECEDING AND CURRENT ROW
+    ) AS naive_mae_30d
 FROM learn.monitor_daily
 ORDER BY target_date;

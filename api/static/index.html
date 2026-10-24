@@ -7,6 +7,12 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23f59e0b' d='M13 2 4 14h6l-1 8 9-12h-6z'/%3E%3C/svg%3E">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <style>
+  /* Any element below sets its own `display` (grid/flex/etc.), which as an
+     author-stylesheet rule otherwise overrides the browser's built-in
+     [hidden] { display: none } -- origin precedence beats specificity, so
+     toggling el.hidden from JS would silently do nothing without this. */
+  [hidden] { display: none !important; }
+
   :root {
     --bg: #f4f5f8;
     --surface: #ffffff;
@@ -371,6 +377,20 @@
   }
   .predict-btn.loading .spin { display: inline-block; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  .verdict {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13.5px;
+    font-weight: 650;
+    padding: 10px 14px;
+    border-radius: 11px;
+    margin-bottom: 16px;
+  }
+  .verdict.good { background: color-mix(in srgb, var(--good) 14%, transparent); color: var(--good); }
+  .verdict.bad  { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); }
+  .verdict .sub { font-weight: 500; opacity: .85; }
+
   .predict-error {
     font-size: 12.5px;
     color: var(--bad);
@@ -458,6 +478,7 @@
 
   <p class="section-title">Rolling accuracy</p>
   <section class="card chart-card" style="animation-delay:.24s">
+    <div id="verdict" hidden></div>
     <div class="chart-wrap" id="rolling-wrap">
       <canvas id="rolling-chart"></canvas>
     </div>
@@ -670,6 +691,20 @@ async function loadRolling() {
   document.getElementById("mae30").textContent = latest ? fmt(latest.mae_30d) : "—";
   document.getElementById("mae30-sub").textContent = latest ? `based on ${latest.n_days_30d} day(s)` : "no data yet";
   document.getElementById("bias7").textContent = latest ? fmt(latest.bias_7d) : "—";
+
+  const verdictEl = document.getElementById("verdict");
+  const naive = latest && latest.naive_mae_7d;
+  if (latest && naive !== null && naive !== undefined && naive > 0) {
+    const improvementPct = ((naive - latest.mae_7d) / naive) * 100;
+    const good = latest.mae_7d < naive;
+    verdictEl.className = `verdict ${good ? "good" : "bad"}`;
+    verdictEl.innerHTML = good
+      ? `✓ Beating the naive "tomorrow = today" baseline by ${improvementPct.toFixed(0)}% <span class="sub">(last ${latest.n_days_7d} day${latest.n_days_7d === 1 ? "" : "s"})</span>`
+      : `⚠ Currently behind the naive "tomorrow = today" baseline by ${Math.abs(improvementPct).toFixed(0)}% <span class="sub">(last ${latest.n_days_7d} day${latest.n_days_7d === 1 ? "" : "s"})</span>`;
+    verdictEl.hidden = false;
+  } else {
+    verdictEl.hidden = true;
+  }
 
   if (!rows.length) { empty.hidden = false; wrap.style.display = "none"; return; }
   empty.hidden = true; wrap.style.display = "block";
