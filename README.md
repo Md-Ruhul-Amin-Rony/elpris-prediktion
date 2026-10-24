@@ -8,6 +8,10 @@ register a model on Hugging Face Hub, predict daily, and monitor real
 accuracy over time, with a small FastAPI service and dashboard to see all
 of it.
 
+**Live dashboard: https://el-price-prediction.onrender.com** (hosted on
+Render's free tier, so the first request after ~15 idle minutes takes
+30–60 s while the service wakes up).
+
 **Everything active lives under `learn/` and `api/`.** `model/` and most of
 `docs/` are the original starter repo, kept for reference — see
 [What's here from the original starter repo](#whats-here-from-the-original-starter-repo).
@@ -58,6 +62,10 @@ training) is in `docs/validation.md`.
 cp .env.example .env     # fill in PRICE_AREA, STATION_ID, DATABASE_URL, HF_TOKEN, HF_MODEL_REPO
 uv sync --extra dev --extra api
 ```
+
+Add `--extra notebook` if you want to run `model/utforskning.ipynb` —
+that extra is the only place `matplotlib` and `duckdb` live, since nothing
+in the pipeline or the API uses them.
 
 Apply the schema once, in order, against your own Postgres (Supabase/Neon
 both work) — six small files, run each one in your DB's SQL console or via
@@ -122,16 +130,60 @@ into a 7-day/30-day rolling MAE and bias time series, with the day-count
 behind each window exposed so an early, thin window is never mistaken for
 a stable figure.
 
+Each resolved day also stores what the naive "tomorrow = today" baseline
+would have predicted (`naive_value`, from the prediction's own frozen
+`feature_snapshot`), and the rolling view carries `naive_mae_7d`/`_30d`.
+That's what the dashboard's verdict ("beating / behind the naive baseline
+by N%") is built on — the same bar training uses to decide whether a
+model is good. A percent-of-actual "accuracy" figure was considered and
+rejected: SE3 prices go to zero or below often enough (over 1,300
+intervals in the history) that dividing an error by the actual price
+gives meaningless numbers.
+
 ## The API and dashboard
 
 ```bash
 uv run uvicorn api.main:app --reload
 ```
 
-`/health`, `/api/latest`, `/api/history`, `/api/monitor/rolling` — and `/`
-serves a small dashboard: the live prediction with a delta vs. today's
-known price and the forecast weather behind it, rolling-accuracy stat
-cards, and two charts. One static HTML file, no separate frontend build.
+| Endpoint | What it does |
+|---|---|
+| `GET /health` | liveness plus a real database round trip |
+| `GET /api/latest` | the most recently logged prediction, with today's price and the forecast weather it was built on |
+| `POST /api/predict` | on demand: re-fetches the SMHI forecast, rebuilds the affected `feat__daily` row, then predicts and logs it — so it reflects the freshest forecast, not last night's |
+| `GET /api/history` | resolved days, predicted vs. actual |
+| `GET /api/monitor/rolling` | rolling MAE, bias and the naive-baseline MAE |
+
+`/` serves the dashboard — one static HTML file, no frontend build. The
+prediction stays hidden until you click **Show predicted price**; after
+that, **Predict again** calls `POST /api/predict`. Each click writes a real
+row to `learn.predictions`, which is safe for the accuracy numbers because
+monitoring always scores the *earliest* prediction for a day.
+
+## Running in Docker
+
+```bash
+docker build -t elpris-api .
+docker run --rm -p 8000:8000 --env-file .env elpris-api
+```
+
+Then open http://localhost:8000. The image runs only the API and
+dashboard — the pipeline and training stay on GitHub Actions. `.env` is
+excluded by `.dockerignore`, so secrets are passed at run time, never
+baked into the image. The container listens on `$PORT` (default 8000),
+which is what Render and Cloud Run both set, and runs as a non-root user.
+
+## Deployment (Render)
+
+Deployed as a Render **Web Service** from this repo's `main` branch, using
+Render's native Python runtime (the `Dockerfile` is there for Docker-based
+hosts, but Render doesn't need it):
+
+- **Build command:** `pip install -e ".[api]"`
+- **Start command:** `uvicorn api.main:app --host 0.0.0.0 --port $PORT`
+- **Environment variables:** `DATABASE_URL`, `PRICE_AREA`, `STATION_ID`,
+  `TARGET`, `HF_TOKEN`, `HF_MODEL_REPO` — the same values as `.env`, set
+  in Render's dashboard rather than committed anywhere.
 
 ## Testing
 
@@ -169,7 +221,12 @@ a solo rebuild under `learn/`. `docs/governance.md` and `docs/etik.md`
   area-specific — switching `PRICE_AREA` without also switching the
   registry would compare a new model against a champion trained for a
   different market, silently.
-- **No on-demand inference** — `predict_copy_version.py` runs once a day
-  on schedule; there's no "predict right now" endpoint yet.
+- **The dashboard isn't read-only.** `POST /api/predict` writes to the
+  database and calls SMHI and Hugging Face on every click, with no
+  authentication or rate limit. Fine for a personal demo; it would need
+  both before being shared widely.
+- **Free-tier cold starts** on Render, as noted at the top.
 - **Orchestration**: planned move to Airflow for the scheduling currently
-  done via GitHub Actions cron.
+  done via GitHub Actions cron — once the pipeline logic stops changing,
+  so the migration is a straight swap of scheduler rather than two moving
+  parts at once.
