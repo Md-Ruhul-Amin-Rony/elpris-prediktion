@@ -1,12 +1,14 @@
 """
 Inference service (component C): serves predictions and monitoring data
-read from Postgres. Does not predict itself -- learn/predict_copy_version.py
-already writes every prediction to learn.predictions on its own schedule;
-this just makes that data queryable over the internet.
+read from Postgres, and can also trigger a fresh on-demand prediction
+(POST /api/predict) instead of only ever reading what the daily scheduled
+job already wrote.
 
 Run:  uv run uvicorn api.main:app --reload
 """
 import os
+import sys
+from pathlib import Path
 
 import psycopg2
 import psycopg2.extras
@@ -16,7 +18,16 @@ from fastapi.staticfiles import StaticFiles
 
 load_dotenv()
 
-AREA = os.environ["PRICE_AREA"]
+# learn/ scripts use bare imports between themselves (e.g. predict_copy_version.py
+# does `from train_copy_version import FEATURES`), so they only import cleanly
+# if learn/ itself is on sys.path -- same reason pytest needs it in pyproject.toml.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "learn"))
+from build_gold_copy_version import refresh_gold  # noqa: E402
+from forecast_ingest_copy_version import fetch_and_store_forecast  # noqa: E402
+from predict_copy_version import predict_and_log  # noqa: E402
+
+AREA = os.getenv("PRICE_AREA")
+STATION = os.getenv("STATION_ID")
 TARGET = os.getenv("TARGET", "mean")
 
 app = FastAPI(title="Elpris Prediction API")
@@ -77,6 +88,35 @@ def latest_prediction():
     if not rows:
         raise HTTPException(404, "no predictions yet")
     return rows[0]
+
+
+@app.post("/api/predict")
+def predict_now():
+    """Refresh the forecast, rebuild Gold, then predict -- all on demand.
+
+    The scheduled daily job only runs this whole chain once a night, so
+    feat__daily's weather is frozen between runs even though SMHI reissues
+    its forecast several times a day. A click here re-fetches the
+    forecast and rebuilds the one affected row before predicting, so the
+    result reflects the freshest forecast available right now instead of
+    whatever was fetched last night. Safe to call repeatedly:
+    monitor_copy_version.py always scores the EARLIEST prediction for a
+    day, so an extra manual one never corrupts the accuracy numbers, it
+    just adds another row.
+    """
+    if not AREA or not STATION:
+        raise HTTPException(503, "PRICE_AREA and STATION_ID must both be set")
+    conn = get_connection()
+    try:
+        fetch_and_store_forecast(conn, STATION)
+        refresh_gold(conn, AREA, STATION, TARGET)
+        return predict_and_log(conn, AREA, TARGET)
+    except SystemExit as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"prediction failed: {exc}") from exc
+    finally:
+        conn.close()
 
 
 @app.get("/api/history")
