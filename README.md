@@ -12,9 +12,7 @@ of it.
 Render's free tier, so the first request after ~15 idle minutes takes
 30–60 s while the service wakes up).
 
-**Everything active lives under `learn/` and `api/`.** `model/` and most of
-`docs/` are the original starter repo, kept for reference — see
-[What's here from the original starter repo](#whats-here-from-the-original-starter-repo).
+
 
 ## Architecture
 
