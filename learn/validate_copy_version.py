@@ -4,18 +4,26 @@ Validation: compare what Silver holds with what the calendar says it should hold
 Reports problems. Never changes data.
 Exits with code 1 if something needs attention now, 0 otherwise.
 
+What fails the run, in the last RECENT_DAYS complete days:
+  - any missing price interval (prices are never filled in)
+  - a weather gap longer than MAX_GAP_HOURS (longer than the features can fill)
+  - duplicates, on any day
+Shorter weather gaps are filled by the feature step, so they only warn.
+
 Run:  uv run python learn/validate_copy_version.py 2024-08-01
 """
 import os
 import sys
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import psycopg2
 from dotenv import load_dotenv
+from features_copy_version import MAX_GAP_HOURS
 from swedish_time_copy_version import (
     STOCKHOLM,
     expected_price_intervals,
     expected_weather_readings,
+    local_midnight,
 )
 
 load_dotenv()
@@ -33,6 +41,18 @@ def all_days(start, end):
     while day <= end:
         yield day
         day += timedelta(days=1)
+
+
+def longest_gap(day, present):
+    """Most consecutive missing hours in one Swedish day."""
+    hour = local_midnight(day).astimezone(UTC)
+    day_end = local_midnight(day + timedelta(days=1)).astimezone(UTC)
+    longest = run = 0
+    while hour < day_end:
+        run = 0 if hour in present else run + 1
+        longest = max(longest, run)
+        hour += timedelta(hours=1)
+    return longest
 
 
 def main():
@@ -65,6 +85,17 @@ def main():
                 (STATION,),
             )
             weather_counts = {(p, d): n for p, d, n in cur.fetchall()}
+
+            # The exact hours of the recent days, to measure gap lengths.
+            cur.execute(
+                "SELECT parameter, observed_at FROM learn.silver__weather"
+                " WHERE station = %s AND observed_at >= %s AND observed_at < %s",
+                (STATION, local_midnight(recent_from),
+                 local_midnight(end + timedelta(days=1))),
+            )
+            recent_hours = {}
+            for name, observed_at in cur.fetchall():
+                recent_hours.setdefault(name, set()).add(observed_at)
 
             # --- structure: must never break ----------------------------
             cur.execute(
@@ -145,12 +176,33 @@ def main():
         lo, hi = PRICE_RANGE if name == "prices" else WEATHER_RANGE[name]
         print(f"  {name:12} {nulls} null, {outside} outside {lo}..{hi}")
 
+    # --- decide: what in the recent days must stop the pipeline -------
+    failures = []
+    warnings = []
+    for day, name, expected, found in sorted(problems):
+        if day < recent_from:
+            continue
+        if name == "prices":
+            failures.append(f"{day}  prices       {expected - found} intervals missing")
+            continue
+        gap = longest_gap(day, recent_hours.get(name, set()))
+        line = f"{day}  {name:12} {expected - found} missing, longest gap {gap} h"
+        (failures if gap > MAX_GAP_HOURS else warnings).append(line)
+
+    print(f"\nLast {RECENT_DAYS} days"
+          f" (weather gaps up to {MAX_GAP_HOURS} h are filled by features)")
+    for line in failures:
+        print(f"  FAIL  {line}")
+    for line in warnings:
+        print(f"  warn  {line}")
+    if not failures and not warnings:
+        print("  complete")
+
     print()
-    recent = [p for p in problems if p[0] >= recent_from]
-    if recent or price_dupes or weather_dupes:
-        print(f"FAIL: problems in the last {RECENT_DAYS} days, or broken structure")
+    if failures or price_dupes or weather_dupes:
+        print(f"FAIL: unusable gaps in the last {RECENT_DAYS} days, or broken structure")
         sys.exit(1)
-    print(f"OK: last {RECENT_DAYS} days complete, structure intact")
+    print(f"OK: last {RECENT_DAYS} days usable, structure intact")
 
 
 if __name__ == "__main__":
